@@ -29,7 +29,7 @@ class PaymentsController extends Controller
             $profile = TenantDB::table('student_profiles')->where('user_id', (int) $payment->student_id)->first();
             $class = $payment->class_id ? TenantDB::table('classes')->where('id', (int) $payment->class_id)->first() : null;
 
-            Mail::to((string) $school->contact_email)->send(new SchoolPaymentReceived($school, $payment, $student, $profile, $class));
+            Mail::to((string) $school->contact_email)->queue(new SchoolPaymentReceived($school, $payment, $student, $profile, $class));
 
             TenantDB::table('payments')->where('id', (int) $payment->id)->update([
                 'school_notified_at' => now(),

@@ -2,6 +2,13 @@
 
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schedule;
+
+// Shared hosting / cPanel: run `php artisan schedule:run` via cron every minute.
+// This will process queued jobs without needing a long-running daemon.
+Schedule::command('queue:work --stop-when-empty --tries=3')
+    ->everyMinute()
+    ->withoutOverlapping();
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());

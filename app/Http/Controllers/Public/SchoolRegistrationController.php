@@ -61,8 +61,7 @@ class SchoolRegistrationController extends Controller
             ], 500);
         }
 
-        // Send synchronously on shared hosting (no queue worker needed).
-        Mail::to($platformEmail)->send(new SchoolRegistrationReceived($school, $acceptUrl, $declineUrl));
+        Mail::to($platformEmail)->queue(new SchoolRegistrationReceived($school, $acceptUrl, $declineUrl));
 
         return response()->json([
             'message' => 'Registration received. You will receive an email after review.',

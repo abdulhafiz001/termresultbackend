@@ -111,8 +111,7 @@ class ApprovalController extends Controller
             'email' => $school->contact_email,
         ]);
 
-        // Send synchronously for approvals to avoid long delays when queue workers aren't running.
-        Mail::to($school->contact_email)->send($mailable);
+        Mail::to($school->contact_email)->queue($mailable);
 
         return response()->view('approvals/result', [
             'title' => 'School Approved',
@@ -170,8 +169,7 @@ class ApprovalController extends Controller
             'updated_at' => now(),
         ]);
 
-        // Send synchronously on shared hosting (no queue worker needed).
-        Mail::to($school->contact_email)->send(new SchoolDeclined($school, (string) $request->input('reason')));
+        Mail::to($school->contact_email)->queue(new SchoolDeclined($school, (string) $request->input('reason')));
 
         return response()->view('approvals/result', [
             'title' => 'School Declined',

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Public;
 
+use App\Mail\ContactFormSubmission;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -56,19 +57,14 @@ class ContactController extends Controller
         // Send email
         try {
             $toEmail = env('CONTACT_RECEIVER_EMAIL', env('MAIL_FROM_ADDRESS', 'support@termresult.com'));
-            Mail::send('emails.contact', [
-                'name' => $data['name'],
-                'email' => $data['email'],
-                'phone' => $data['phone'],
-                'subject' => $data['subject'],
-                // NOTE: In Laravel mail views, $message is reserved (Illuminate\Mail\Message).
-                // Use a different variable name for the actual body.
-                'messageBody' => $data['message'],
-                'contactId' => $contactId,
-            ], function ($message) use ($toEmail, $data) {
-                $message->to($toEmail)
-                    ->subject('New Contact Form Submission: ' . $data['subject']);
-            });
+            Mail::to($toEmail)->queue(new ContactFormSubmission(
+                name: (string) $data['name'],
+                email: (string) $data['email'],
+                phone: (string) $data['phone'],
+                subjectLine: (string) $data['subject'],
+                messageBody: (string) $data['message'],
+                contactId: (int) $contactId,
+            ));
         } catch (\Exception $e) {
             // Log error but don't fail the request
             \Log::error('Failed to send contact email: ' . $e->getMessage());

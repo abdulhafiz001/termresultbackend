@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Platform;
 
 use App\Http\Controllers\Controller;
+use App\Mail\ContactReply;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
@@ -34,15 +35,11 @@ class ContactMessagesController extends Controller
 
         // Send reply email
         try {
-            Mail::send('emails.contact-reply', [
-                'name' => $contact->name,
-                'subject' => $data['subject'],
-                // NOTE: In Laravel mail views, $message is reserved (Illuminate\Mail\Message).
-                'messageBody' => $data['message'],
-            ], function ($mail) use ($contact, $data) {
-                $mail->to($contact->email)
-                    ->subject($data['subject']);
-            });
+            Mail::to((string) $contact->email)->queue(new ContactReply(
+                name: (string) $contact->name,
+                subjectLine: (string) $data['subject'],
+                messageBody: (string) $data['message'],
+            ));
         } catch (\Exception $e) {
             \Log::error('Failed to send reply email: ' . $e->getMessage());
             return response()->json(['message' => 'Failed to send reply email.'], 500);

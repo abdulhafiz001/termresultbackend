@@ -31,7 +31,7 @@ class PaystackWebhookController extends Controller
                 ? DB::table('classes')->where('tenant_id', $tenantId)->where('id', (int) $payment->class_id)->first()
                 : null;
 
-            Mail::to((string) $school->contact_email)->send(new SchoolPaymentReceived($school, $payment, $student, $profile, $class));
+            Mail::to((string) $school->contact_email)->queue(new SchoolPaymentReceived($school, $payment, $student, $profile, $class));
 
             DB::table('payments')->where('tenant_id', $tenantId)->where('id', (int) $payment->id)->update([
                 'school_notified_at' => now(),

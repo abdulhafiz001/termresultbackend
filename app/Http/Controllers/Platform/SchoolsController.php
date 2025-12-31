@@ -175,8 +175,7 @@ class SchoolsController extends Controller
             ]
         );
 
-        // Send synchronously for platform approvals to reduce delivery delays.
-        Mail::to($school->contact_email)->send($mailable);
+        Mail::to($school->contact_email)->queue($mailable);
 
         return response()->json(['message' => 'School approved.']);
     }
@@ -232,8 +231,7 @@ class SchoolsController extends Controller
         ])->save();
 
         if ($school->contact_email) {
-            // Send synchronously on shared hosting (no queue worker needed).
-            Mail::to($school->contact_email)->send(new SchoolDeclined($school, (string) $data['reason']));
+            Mail::to($school->contact_email)->queue(new SchoolDeclined($school, (string) $data['reason']));
         }
 
         return response()->json(['message' => 'School declined.']);
