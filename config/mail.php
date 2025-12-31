@@ -115,4 +115,5 @@ return [
         'name' => env('MAIL_FROM_NAME', 'Example'),
     ],
 
+    'platform_admin_email' => env('PLATFORM_ADMIN_EMAIL'),
 ];

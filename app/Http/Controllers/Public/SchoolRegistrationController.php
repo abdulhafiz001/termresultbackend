@@ -54,7 +54,7 @@ class SchoolRegistrationController extends Controller
             ['token' => $plainToken]
         );
 
-        $platformEmail = env('PLATFORM_ADMIN_EMAIL');
+        $platformEmail = config('mail.platform_admin_email');
         if (! $platformEmail) {
             return response()->json([
                 'message' => 'PLATFORM_ADMIN_EMAIL is not configured on the server.',
