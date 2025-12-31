@@ -73,6 +73,14 @@ use App\Http\Controllers\Tenant\Student\ExamsController as StudentExamsControlle
 use App\Http\Controllers\Tenant\Student\AssignmentsController as StudentAssignmentsController;
 use Illuminate\Support\Facades\Route;
 
+Route::get('/test/api', function () {
+    return response()->json([
+        'message' => 'TermResult API is running',
+        'status' => 'success',
+        'version' => '1.0.0',
+    ]);
+});
+
 Route::prefix('public')->group(function () {
     Route::post('/schools/register', [SchoolRegistrationController::class, 'register'])
         ->middleware('throttle:20,1');
