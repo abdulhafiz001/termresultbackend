@@ -27,22 +27,32 @@ class AdminAuthController extends Controller
 
         $data = $request->validate([
             'full_name' => ['required', 'string', 'max:255'],
-            'username' => ['required', 'string', 'max:80'],
-            'email' => ['required', 'email', 'max:255'],
+            'username' => ['required', 'string', 'max:80', 'unique:platform_admins,username'],
+            'email' => ['required', 'email', 'max:255', 'unique:platform_admins,email'],
             'password' => ['required', 'string', 'min:6', 'max:255'],
             'role' => ['nullable', 'in:admin,customer_service'],
         ]);
 
-        $admin = PlatformAdmin::query()->create([
-            'full_name' => trim($data['full_name']),
-            'username' => strtolower(trim($data['username'])),
-            'email' => strtolower(trim($data['email'])),
-            'password' => Hash::make($data['password']),
-            'role' => $data['role'] ?? 'admin',
-            'is_active' => true,
-        ]);
+        try {
+            $admin = PlatformAdmin::query()->create([
+                'full_name' => trim($data['full_name']),
+                'username' => strtolower(trim($data['username'])),
+                'email' => strtolower(trim($data['email'])),
+                'password' => Hash::make($data['password']),
+                'role' => $data['role'] ?? 'admin',
+                'is_active' => true,
+            ]);
 
-        $token = $admin->createToken('platform-admin')->plainTextToken;
+            $token = $admin->createToken('platform-admin')->plainTextToken;
+        } catch (\Throwable $e) {
+            \Log::error('Platform admin setup failed.', [
+                'error' => $e->getMessage(),
+            ]);
+            $msg = config('app.debug')
+                ? $e->getMessage()
+                : 'Failed to create the first admin.';
+            return response()->json(['message' => $msg], 500);
+        }
 
         return response()->json([
             'data' => [

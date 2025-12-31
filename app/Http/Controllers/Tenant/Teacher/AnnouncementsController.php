@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Support\TenantContext;
 use App\Support\TenantDB;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class AnnouncementsController extends Controller
@@ -42,17 +43,20 @@ class AnnouncementsController extends Controller
     {
         $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
-        
-        $total = DB::table('announcements')
-            ->where('tenant_id', $tenantId)
-            ->where('for_teachers', true)
-            ->whereNotIn('id', function ($query) use ($teacherId, $tenantId) {
-                $query->select('announcement_id')
-                    ->from('announcement_views')
-                    ->where('user_id', $teacherId)
-                    ->where('tenant_id', $tenantId);
-            })
-            ->count();
+
+        $cacheKey = "announcements:unread_count:teacher:{$teacherId}";
+        $total = Cache::remember($cacheKey, 30, function () use ($teacherId, $tenantId) {
+            return DB::table('announcements')
+                ->where('tenant_id', $tenantId)
+                ->where('for_teachers', true)
+                ->whereNotIn('id', function ($query) use ($teacherId, $tenantId) {
+                    $query->select('announcement_id')
+                        ->from('announcement_views')
+                        ->where('user_id', $teacherId)
+                        ->where('tenant_id', $tenantId);
+                })
+                ->count();
+        });
 
         return response()->json(['count' => $total]);
     }
@@ -68,6 +72,8 @@ class AnnouncementsController extends Controller
             'user_id' => $teacherId,
             'viewed_at' => now(),
         ]);
+
+        Cache::forget("announcements:unread_count:teacher:{$teacherId}");
 
         return response()->json(['message' => 'Announcement marked as read.']);
     }

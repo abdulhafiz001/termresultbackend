@@ -10,7 +10,6 @@ class PlatformAdmin extends Authenticatable
 {
     use HasApiTokens, Notifiable;
 
-    protected $connection = 'mysql';
     protected $table = 'platform_admins';
 
     protected $fillable = [
