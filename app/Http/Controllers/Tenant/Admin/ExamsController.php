@@ -3,17 +3,22 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 
 class ExamsController extends Controller
 {
     public function index(Request $request)
     {
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $tenantId = TenantContext::id();
+
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
@@ -21,16 +26,29 @@ class ExamsController extends Controller
         }
 
         $data = $request->validate([
-            'class_id' => ['nullable', 'integer', 'exists:classes,id'],
-            'subject_id' => ['nullable', 'integer', 'exists:subjects,id'],
+            'class_id' => ['nullable', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'subject_id' => ['nullable', 'integer', Rule::exists('subjects', 'id')->where('tenant_id', $tenantId)],
             'status' => ['nullable', 'in:approved,live,ended'],
         ]);
 
         $q = DB::table('exams as e')
-            ->join('classes as c', 'c.id', '=', 'e.class_id')
-            ->join('subjects as sub', 'sub.id', '=', 'e.subject_id')
-            ->join('exam_question_submissions as s', 's.id', '=', 'e.submission_id')
-            ->join('users as t', 't.id', '=', 's.teacher_id')
+            ->where('e.tenant_id', $tenantId)
+            ->join('classes as c', function ($j) {
+                $j->on('c.id', '=', 'e.class_id')
+                    ->on('c.tenant_id', '=', 'e.tenant_id');
+            })
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 'e.subject_id')
+                    ->on('sub.tenant_id', '=', 'e.tenant_id');
+            })
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'e.tenant_id');
+            })
+            ->join('users as t', function ($j) {
+                $j->on('t.id', '=', 's.teacher_id')
+                    ->on('t.tenant_id', '=', 'e.tenant_id');
+            })
             ->where('e.academic_session_id', $currentSession->id)
             ->where('e.term_id', $currentTerm->id);
 
@@ -65,11 +83,11 @@ class ExamsController extends Controller
 
     public function start(Request $request, int $id)
     {
-        $row = DB::table('exams')->where('id', $id)->first();
+        $row = TenantDB::table('exams')->where('id', $id)->first();
         if (! $row) return response()->json(['message' => 'Exam not found.'], 404);
         if ($row->status === 'ended') return response()->json(['message' => 'Exam already ended.'], 409);
 
-        DB::table('exams')->where('id', $id)->update([
+        TenantDB::table('exams')->where('id', $id)->update([
             'status' => 'live',
             'started_at' => $row->started_at ?: now(),
             'updated_at' => now(),
@@ -80,19 +98,19 @@ class ExamsController extends Controller
 
     public function end(Request $request, int $id)
     {
-        $exam = DB::table('exams')->where('id', $id)->first();
+        $exam = TenantDB::table('exams')->where('id', $id)->first();
         if (! $exam) return response()->json(['message' => 'Exam not found.'], 404);
         if ($exam->status === 'ended') return response()->json(['message' => 'Exam already ended.'], 409);
 
         DB::transaction(function () use ($id) {
-            DB::table('exams')->where('id', $id)->update([
+            TenantDB::table('exams')->where('id', $id)->update([
                 'status' => 'ended',
                 'ended_at' => now(),
                 'updated_at' => now(),
             ]);
 
             // Force-submit all in-progress attempts (no grading here; teacher can grade/auto-grade).
-            DB::table('exam_attempts')
+            TenantDB::table('exam_attempts')
                 ->where('exam_id', $id)
                 ->where('status', 'in_progress')
                 ->update([
@@ -107,9 +125,18 @@ class ExamsController extends Controller
 
     public function monitor(Request $request, int $id)
     {
+        $tenantId = TenantContext::id();
+
         $exam = DB::table('exams as e')
-            ->join('classes as c', 'c.id', '=', 'e.class_id')
-            ->join('subjects as sub', 'sub.id', '=', 'e.subject_id')
+            ->where('e.tenant_id', $tenantId)
+            ->join('classes as c', function ($j) {
+                $j->on('c.id', '=', 'e.class_id')
+                    ->on('c.tenant_id', '=', 'e.tenant_id');
+            })
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 'e.subject_id')
+                    ->on('sub.tenant_id', '=', 'e.tenant_id');
+            })
             ->where('e.id', $id)
             ->first([
                 'e.id',
@@ -127,7 +154,11 @@ class ExamsController extends Controller
         if (! $exam) return response()->json(['message' => 'Exam not found.'], 404);
 
         $students = DB::table('users as u')
-            ->join('student_profiles as sp', 'sp.user_id', '=', 'u.id')
+            ->where('u.tenant_id', $tenantId)
+            ->join('student_profiles as sp', function ($j) {
+                $j->on('sp.user_id', '=', 'u.id')
+                    ->on('sp.tenant_id', '=', 'u.tenant_id');
+            })
             ->where('u.role', 'student')
             ->where('sp.current_class_id', $exam->class_id)
             ->select(['u.id', 'u.admission_number', 'sp.first_name', 'sp.last_name'])
@@ -139,7 +170,7 @@ class ExamsController extends Controller
                 'name' => trim($s->last_name . ' ' . $s->first_name),
             ]);
 
-        $attempts = DB::table('exam_attempts')
+        $attempts = TenantDB::table('exam_attempts')
             ->where('exam_id', $id)
             ->get()
             ->keyBy('student_id');

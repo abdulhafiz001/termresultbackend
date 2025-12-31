@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Tenant\Student;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Tenant\Admin\GradingConfigsController;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -15,6 +17,7 @@ class ResultsController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
+        $tenantId = TenantContext::id();
         $restrictions = $user?->restrictions ?? [];
         if (is_string($restrictions)) {
             $restrictions = json_decode($restrictions, true) ?? [];
@@ -35,9 +38,9 @@ class ResultsController extends Controller
 
         $studentId = $request->user()->id;
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         $sessionId = (int) $request->query('academic_session_id', $currentSession->id ?? 0);
@@ -47,7 +50,7 @@ class ResultsController extends Controller
             return response()->json(['message' => 'Academic session/term not set.'], 400);
         }
 
-        $profile = DB::table('student_profiles')->where('user_id', $studentId)->first();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $studentId)->first();
         $classId = (int) ($profile->current_class_id ?? 0);
 
         $school = app('tenant.school');
@@ -94,8 +97,11 @@ class ResultsController extends Controller
             $theme,
             $logoUrl
         ) {
-            $rows = DB::table('student_scores')
-                ->join('subjects', 'subjects.id', '=', 'student_scores.subject_id')
+            $rows = TenantDB::table('student_scores')
+                ->join('subjects', function ($j) {
+                    $j->on('subjects.id', '=', 'student_scores.subject_id')
+                        ->on('subjects.tenant_id', '=', 'student_scores.tenant_id');
+                })
                 ->where('student_scores.student_id', $studentId)
                 ->where('student_scores.academic_session_id', $sessionId)
                 ->where('student_scores.term_id', $termId)
@@ -117,8 +123,11 @@ class ResultsController extends Controller
             $overallPositionFormatted = null;
             $totalStudentsInClass = null;
             if ($policy !== 'none' && $classId) {
-                $ranked = DB::table('student_scores as sc')
-                    ->join('student_profiles as sp', 'sp.user_id', '=', 'sc.student_id')
+                $ranked = TenantDB::table('student_scores as sc')
+                    ->join('student_profiles as sp', function ($j) {
+                        $j->on('sp.user_id', '=', 'sc.student_id')
+                            ->on('sp.tenant_id', '=', 'sc.tenant_id');
+                    })
                     ->where('sp.current_class_id', $classId)
                     ->where('sc.academic_session_id', $sessionId)
                     ->where('sc.term_id', $termId)
@@ -157,8 +166,11 @@ class ResultsController extends Controller
             if ($policy !== 'none' && $classId && $rows->count() > 0) {
                 foreach ($rows as $row) {
                     $subjectId = (int) $row->subject_id;
-                    $ranked = DB::table('student_scores as sc')
-                        ->join('student_profiles as sp', 'sp.user_id', '=', 'sc.student_id')
+                    $ranked = TenantDB::table('student_scores as sc')
+                        ->join('student_profiles as sp', function ($j) {
+                            $j->on('sp.user_id', '=', 'sc.student_id')
+                                ->on('sp.tenant_id', '=', 'sc.tenant_id');
+                        })
                         ->where('sp.current_class_id', $classId)
                         ->where('sc.academic_session_id', $sessionId)
                         ->where('sc.term_id', $termId)
@@ -218,11 +230,14 @@ class ResultsController extends Controller
                 ];
             });
 
-            $term = DB::table('terms')->where('id', $termId)->first();
+            $term = TenantDB::table('terms')->where('id', $termId)->first();
             $promotion = null;
             if ($term && strtolower(trim((string) $term->name)) === 'third term') {
-                $promotion = DB::table('student_promotions as sp')
-                    ->leftJoin('classes as c', 'c.id', '=', 'sp.to_class_id')
+                $promotion = TenantDB::table('student_promotions as sp')
+                    ->leftJoin('classes as c', function ($j) {
+                        $j->on('c.id', '=', 'sp.to_class_id')
+                            ->on('c.tenant_id', '=', 'sp.tenant_id');
+                    })
                     ->where('sp.student_id', $studentId)
                     ->where('sp.academic_session_id', $sessionId)
                     ->where('sp.term_id', $termId)

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -44,6 +45,7 @@ class SchoolConfigController extends Controller
                 'address' => $school->address,
                 'theme' => $theme,
                 'logo_url' => $logoUrl,
+                'storage_quota_mb' => (int) ($school->storage_quota_mb ?? 200),
                 'feature_toggles' => is_string($school->feature_toggles)
                     ? json_decode($school->feature_toggles, true) ?? []
                     : ($school->feature_toggles ?? []),
@@ -125,6 +127,7 @@ class SchoolConfigController extends Controller
         ]);
 
         $school = app('tenant.school');
+        $tenantId = TenantContext::id();
         $central = app()->bound('central.connection') ? app('central.connection') : config('database.default');
 
         // Delete old logo if exists
@@ -137,7 +140,8 @@ class SchoolConfigController extends Controller
         }
 
         // Store new logo
-        $path = $request->file('logo')->store('school-logos/' . $school->subdomain, 'public');
+        // Partition by tenant_id (single-db tenancy) to prevent file collisions/leakage.
+        $path = $request->file('logo')->store("tenants/{$tenantId}/branding", 'public');
 
         // Update theme with new logo path
         $existingTheme['logo_path'] = $path;

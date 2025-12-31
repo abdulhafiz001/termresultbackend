@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\School;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -29,45 +28,25 @@ class DashboardController extends Controller
             $adminTotal = 0;
             $serviceFeeTotalKobo = 0;
 
-            $activeSchools = School::query()->where('status', 'active')->whereNotNull('database_name')->get(['id', 'database_name', 'subdomain']);
-            $central = app()->bound('central.connection') ? app('central.connection') : config('database.default');
+            // Single-database tenancy: aggregate directly from central tables, filtering to active schools.
+            $activeTenantIds = School::query()
+                ->where('status', 'active')
+                ->pluck('id')
+                ->map(fn ($id) => (string) $id)
+                ->values()
+                ->all();
 
-            foreach ($activeSchools as $school) {
-                try {
-                    Config::set('database.connections.tenant.database', $school->database_name);
-                    DB::purge('tenant');
+            if (! empty($activeTenantIds) && Schema::hasTable('users')) {
+                $studentTotal = (int) DB::table('users')->whereIn('tenant_id', $activeTenantIds)->where('role', 'student')->count();
+                $teacherTotal = (int) DB::table('users')->whereIn('tenant_id', $activeTenantIds)->where('role', 'teacher')->count();
+                $adminTotal = (int) DB::table('users')->whereIn('tenant_id', $activeTenantIds)->where('role', 'school_admin')->count();
+            }
 
-                    $tenant = DB::connection('tenant');
-
-                    if ($tenant->getSchemaBuilder()->hasTable('users')) {
-                        $studentTotal += (int) $tenant->table('users')->where('role', 'student')->count();
-                        $teacherTotal += (int) $tenant->table('users')->where('role', 'teacher')->count();
-                        $adminTotal += (int) $tenant->table('users')->where('role', 'school_admin')->count();
-                    }
-
-                    if ($tenant->getSchemaBuilder()->hasTable('payments') && $tenant->getSchemaBuilder()->hasColumn('payments', 'service_fee_kobo')) {
-                        $serviceFeeTotalKobo += (int) $tenant->table('payments')->where('status', 'success')->sum('service_fee_kobo');
-                    }
-                } catch (\Throwable $e) {
-                    // Skip broken tenant; keep platform usable.
-                    try {
-                        // Guard for fresh installs where audit_logs migration hasn't been run yet.
-                        if (Schema::connection($central)->hasTable('audit_logs')) {
-                            DB::connection($central)->table('audit_logs')->insert([
-                                'action' => 'platform_stats_tenant_error',
-                                'subject_type' => School::class,
-                                'subject_id' => $school->id,
-                                'metadata' => json_encode(['error' => $e->getMessage()]),
-                                'ip' => null,
-                                'user_agent' => null,
-                                'created_at' => now(),
-                                'updated_at' => now(),
-                            ]);
-                        }
-                    } catch (\Throwable $ignored) {
-                        // ignore
-                    }
-                }
+            if (! empty($activeTenantIds) && Schema::hasTable('payments') && Schema::hasColumn('payments', 'service_fee_kobo')) {
+                $serviceFeeTotalKobo = (int) DB::table('payments')
+                    ->whereIn('tenant_id', $activeTenantIds)
+                    ->where('status', 'success')
+                    ->sum('service_fee_kobo');
             }
 
             return response()->json([

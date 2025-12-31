@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Tenant\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Subject;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Validation\Rule;
 
 class SubjectsController extends Controller
 {
@@ -26,9 +28,21 @@ class SubjectsController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
-            'name' => ['required', 'string', 'max:255', 'unique:subjects,name'],
-            'code' => ['nullable', 'string', 'max:50', 'unique:subjects,code'],
+            'name' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('subjects', 'name')->where('tenant_id', $tenantId),
+            ],
+            'code' => [
+                'nullable',
+                'string',
+                'max:50',
+                Rule::unique('subjects', 'code')->where('tenant_id', $tenantId),
+            ],
             'description' => ['nullable', 'string', 'max:2000'],
         ]);
 
@@ -41,10 +55,26 @@ class SubjectsController extends Controller
     public function update(Request $request, int $id)
     {
         $subject = Subject::findOrFail($id);
+        $tenantId = TenantContext::id();
 
         $data = $request->validate([
-            'name' => ['sometimes', 'required', 'string', 'max:255', 'unique:subjects,name,'.$subject->id],
-            'code' => ['nullable', 'string', 'max:50', 'unique:subjects,code,'.$subject->id],
+            'name' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('subjects', 'name')
+                    ->ignore($subject->id)
+                    ->where('tenant_id', $tenantId),
+            ],
+            'code' => [
+                'nullable',
+                'string',
+                'max:50',
+                Rule::unique('subjects', 'code')
+                    ->ignore($subject->id)
+                    ->where('tenant_id', $tenantId),
+            ],
             'description' => ['nullable', 'string', 'max:2000'],
         ]);
 

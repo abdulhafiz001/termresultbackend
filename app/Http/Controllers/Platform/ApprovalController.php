@@ -8,17 +8,16 @@ use App\Mail\SchoolDeclined;
 use App\Models\School;
 use App\Models\SchoolApprovalToken;
 use App\Models\User;
-use App\Services\TenantDatabaseProvisioner;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Stancl\Tenancy\Database\Models\Tenant;
 
 class ApprovalController extends Controller
 {
-    public function accept(Request $request, TenantDatabaseProvisioner $provisioner, string $token)
+    public function accept(Request $request, string $token)
     {
         $approval = $this->findValidApproval($token);
         if (! $approval) {
@@ -31,26 +30,20 @@ class ApprovalController extends Controller
             return response()->view('approvals/result', ['title' => 'Already Processed', 'message' => "This school is already {$school->status}."], 200);
         }
 
-        // Provision tenant DB + run tenant migrations (can throw; don't mark token used until success).
-        try {
-            $provisioner->provision($school);
-        } catch (\Throwable $e) {
-            return response()->view('approvals/result', [
-                'title' => 'Provisioning Failed',
-                'message' => 'School approval failed while provisioning the tenant database. Please try again or contact support.',
-            ], 500);
-        }
+        // Single-database tenancy: no DB provisioning. Ensure a tenant record exists for cache/redis isolation.
+        $tenantId = (string) $school->id;
+        Tenant::query()->firstOrCreate(
+            ['id' => $tenantId],
+            [
+                'data' => [
+                    'school_id' => $school->id,
+                    'subdomain' => $school->subdomain,
+                ],
+            ]
+        );
 
-        // Create tenant admin user (in tenant DB).
-        // Ensure the tenant connection is bound to the correct tenant database before switching connections.
-        // This mirrors the pattern in IdentifyTenant middleware.
-        Config::set('database.connections.tenant.database', $school->database_name);
-        DB::purge('tenant');
-        
-        // Store original connection to restore it in finally block
-        $originalConnection = DB::getDefaultConnection();
-        DB::setDefaultConnection('tenant');
-        
+        // Create/reset tenant admin user (in central users table, scoped by tenant_id).
+        tenancy()->initialize($tenantId);
         try {
             $passwordPlain = Str::random(10);
             $adminUsername = 'admin.'.$school->subdomain;
@@ -58,6 +51,7 @@ class ApprovalController extends Controller
             $adminUser = User::query()->where('username', $adminUsername)->first();
             if (! $adminUser) {
                 $adminUser = User::query()->create([
+                    'tenant_id' => $tenantId,
                     'name' => $school->name.' Admin',
                     'username' => $adminUsername,
                     'email' => $school->contact_email,
@@ -67,14 +61,16 @@ class ApprovalController extends Controller
                 ]);
             } else {
                 $adminUser->forceFill([
+                    'tenant_id' => $tenantId,
                     'email' => $school->contact_email,
                     'status' => 'active',
                     'password' => Hash::make($passwordPlain),
                 ])->save();
             }
         } finally {
-            // Always restore the original database connection, even if an exception occurs
-            DB::setDefaultConnection($originalConnection);
+            if (tenancy()->initialized) {
+                tenancy()->end();
+            }
         }
 
         DB::transaction(function () use ($school, $approval) {
@@ -120,7 +116,7 @@ class ApprovalController extends Controller
 
         return response()->view('approvals/result', [
             'title' => 'School Approved',
-            'message' => 'School has been approved and provisioned successfully. A welcome email was sent to the school.',
+            'message' => 'School has been approved successfully. A welcome email was sent to the school.',
         ]);
     }
 

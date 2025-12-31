@@ -7,6 +7,7 @@ use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
+use Stancl\Tenancy\Database\Models\Tenant;
 
 class IdentifyTenant
 {
@@ -21,7 +22,17 @@ class IdentifyTenant
 
         $subdomain = $this->resolveSubdomain($request);
 
+        $isTenantRequest = $request->is('api/tenant/*') || $request->is('tenant/*');
+
         if (! $subdomain) {
+            // Fail-safe: if the request is a tenant route, tenant MUST be resolved.
+            if ($isTenantRequest) {
+                DB::setDefaultConnection($centralConnection);
+                return response()->json([
+                    'message' => 'Tenant not resolved.',
+                ], 400);
+            }
+
             // Ensure the default connection is restored for non-tenant requests too.
             DB::setDefaultConnection($centralConnection);
             return $next($request);
@@ -32,10 +43,33 @@ class IdentifyTenant
             ->where('status', 'active')
             ->first();
 
-        if (! $school || ! $school->database_name) {
+        if (! $school) {
+            // Fail-safe: tenant route without a valid active tenant -> deny.
+            if ($isTenantRequest) {
+                DB::setDefaultConnection($centralConnection);
+                return response()->json([
+                    'message' => 'Tenant not found or not active.',
+                ], 404);
+            }
+
             DB::setDefaultConnection($centralConnection);
             return $next($request);
         }
+
+        // Initialize Stancl tenancy context (single-database target architecture).
+        // For now we keep the legacy DB-per-school connection switching until tenant_id migrations land,
+        // but we still want tenant-aware cache/redis isolation immediately.
+        $tenantId = (string) $school->id;
+        if (! Tenant::query()->where('id', $tenantId)->exists()) {
+            Tenant::create([
+                'id' => $tenantId,
+                'data' => [
+                    'school_id' => $school->id,
+                    'subdomain' => $school->subdomain,
+                ],
+            ]);
+        }
+        tenancy()->initialize($tenantId);
 
         // If the entire school site is restricted, block tenant API access (but still allow public tenant resolve).
         // Frontend will show a notice using `/public/tenants/resolve`.
@@ -55,12 +89,6 @@ class IdentifyTenant
             }
         }
 
-        Config::set('database.connections.tenant.database', $school->database_name);
-
-        // Ensure next queries use the fresh tenant database.
-        DB::purge('tenant');
-        DB::setDefaultConnection('tenant');
-
         app()->instance('tenant.school', $school);
 
         try {
@@ -68,6 +96,9 @@ class IdentifyTenant
         } finally {
             // Important: prevent tenant connection leaking into subsequent requests (same PHP process).
             DB::setDefaultConnection($centralConnection);
+            if (tenancy()->initialized) {
+                tenancy()->end();
+            }
         }
     }
 

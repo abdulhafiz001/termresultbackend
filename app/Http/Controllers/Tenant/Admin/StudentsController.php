@@ -6,22 +6,25 @@ use App\Http\Controllers\Controller;
 use App\Exports\StudentsExport;
 use App\Imports\StudentsImport;
 use App\Models\User;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Validation\Rule;
 
 class StudentsController extends Controller
 {
     public function show(int $id)
     {
         $user = User::query()->where('role', 'student')->findOrFail($id);
-        $profile = DB::table('student_profiles')->where('user_id', $user->id)->first();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $user->id)->first();
         $class = $profile?->current_class_id
-            ? DB::table('classes')->where('id', (int) $profile->current_class_id)->first()
+            ? TenantDB::table('classes')->where('id', (int) $profile->current_class_id)->first()
             : null;
 
-        $subjectRows = DB::table('student_subject')
+        $subjectRows = TenantDB::table('student_subject')
             ->join('subjects', 'subjects.id', '=', 'student_subject.subject_id')
             ->where('student_subject.student_id', $user->id)
             ->select(['subjects.id', 'subjects.name', 'subjects.code'])
@@ -32,7 +35,7 @@ class StudentsController extends Controller
 
         $teachersForClass = [];
         if ($class) {
-            $teachersForClass = DB::table('teacher_class')
+            $teachersForClass = TenantDB::table('teacher_class')
                 ->join('users', 'users.id', '=', 'teacher_class.teacher_id')
                 ->where('teacher_class.class_id', (int) $class->id)
                 ->where('users.role', 'teacher')
@@ -68,6 +71,8 @@ class StudentsController extends Controller
 
     public function import(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'class_id' => ['required', 'integer', 'exists:classes,id'],
             'file' => ['required', 'file', 'max:5120'], // 5MB
@@ -85,7 +90,7 @@ class StudentsController extends Controller
             }
         }
         if (!empty($subjectIds)) {
-            $existsCount = DB::table('subjects')->whereIn('id', $subjectIds)->count();
+            $existsCount = TenantDB::table('subjects')->whereIn('id', $subjectIds)->count();
             if ($existsCount !== count($subjectIds)) {
                 return response()->json(['message' => 'One or more selected subjects are invalid.'], 422);
             }
@@ -132,7 +137,7 @@ class StudentsController extends Controller
             }
 
             DB::transaction(function () use (
-                $first, $last, $middle, $admission, $email, $phone, $dob, $gender, $address, $classId, $subjectIds, &$created
+                $tenantId, $first, $last, $middle, $admission, $email, $phone, $dob, $gender, $address, $classId, $subjectIds, &$created
             ) {
                 $user = User::create([
                     'name' => trim($first.' '.$last),
@@ -143,6 +148,7 @@ class StudentsController extends Controller
                 ]);
 
                 DB::table('student_profiles')->insert([
+                    'tenant_id' => $tenantId,
                     'user_id' => $user->id,
                     'first_name' => $first,
                     'last_name' => $last,
@@ -159,6 +165,7 @@ class StudentsController extends Controller
 
                 if (!empty($subjectIds)) {
                     $rows = array_map(fn ($sid) => [
+                        'tenant_id' => $tenantId,
                         'student_id' => $user->id,
                         'subject_id' => (int) $sid,
                         'created_at' => now(),
@@ -183,7 +190,7 @@ class StudentsController extends Controller
 
     public function index(Request $request)
     {
-        $query = DB::table('users')
+        $query = TenantDB::table('users')
             ->join('student_profiles', 'student_profiles.user_id', '=', 'users.id')
             ->leftJoin('classes', 'classes.id', '=', 'student_profiles.current_class_id')
             ->where('users.role', 'student')
@@ -226,11 +233,18 @@ class StudentsController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'first_name' => ['required', 'string', 'max:255'],
             'last_name' => ['required', 'string', 'max:255'],
             'middle_name' => ['nullable', 'string', 'max:255'],
-            'admission_number' => ['required', 'string', 'max:255', 'unique:users,admission_number'],
+            'admission_number' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('users', 'admission_number')->where('tenant_id', $tenantId),
+            ],
             'date_of_birth' => ['nullable', 'date'],
             'gender' => ['nullable', 'in:male,female'],
             'email' => ['nullable', 'email', 'max:255'],
@@ -253,6 +267,7 @@ class StudentsController extends Controller
         ]);
 
         DB::table('student_profiles')->insert([
+            'tenant_id' => $tenantId,
             'user_id' => $user->id,
             'first_name' => $data['first_name'],
             'last_name' => $data['last_name'],
@@ -269,6 +284,7 @@ class StudentsController extends Controller
 
         if (! empty($data['subject_ids'])) {
             $rows = array_map(fn ($sid) => [
+                'tenant_id' => $tenantId,
                 'student_id' => $user->id,
                 'subject_id' => (int) $sid,
                 'created_at' => now(),
@@ -284,6 +300,7 @@ class StudentsController extends Controller
     public function update(Request $request, int $id)
     {
         $user = User::query()->where('role', 'student')->findOrFail($id);
+        $tenantId = TenantContext::id();
 
         $data = $request->validate([
             'first_name' => ['sometimes', 'required', 'string', 'max:255'],
@@ -342,13 +359,14 @@ class StudentsController extends Controller
 
         if (! empty($profileUpdate)) {
             $profileUpdate['updated_at'] = now();
-            DB::table('student_profiles')->where('user_id', $user->id)->update($profileUpdate);
+            TenantDB::table('student_profiles')->where('user_id', $user->id)->update($profileUpdate);
         }
 
         if (array_key_exists('subject_ids', $data)) {
-            DB::table('student_subject')->where('student_id', $user->id)->delete();
+            TenantDB::table('student_subject')->where('student_id', $user->id)->delete();
             if (! empty($data['subject_ids'])) {
                 $rows = array_map(fn ($sid) => [
+                    'tenant_id' => $tenantId,
                     'student_id' => $user->id,
                     'subject_id' => (int) $sid,
                     'created_at' => now(),

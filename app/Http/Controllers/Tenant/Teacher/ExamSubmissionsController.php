@@ -3,29 +3,39 @@
 namespace App\Http\Controllers\Tenant\Teacher;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class ExamSubmissionsController extends Controller
 {
     public function index(Request $request)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
             return response()->json(['message' => 'Current academic session/term is not set.'], 400);
         }
 
-        $items = DB::table('exam_question_submissions as s')
-            ->join('classes as c', 'c.id', '=', 's.class_id')
-            ->join('subjects as sub', 'sub.id', '=', 's.subject_id')
+        $items = TenantDB::table('exam_question_submissions as s')
+            ->join('classes as c', function ($j) {
+                $j->on('c.id', '=', 's.class_id')
+                    ->on('c.tenant_id', '=', 's.tenant_id');
+            })
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 's.subject_id')
+                    ->on('sub.tenant_id', '=', 's.tenant_id');
+            })
             ->where('s.teacher_id', $teacherId)
             ->where('s.academic_session_id', $currentSession->id)
             ->where('s.term_id', $currentTerm->id)
@@ -54,11 +64,12 @@ class ExamSubmissionsController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
 
         $data = $request->validate([
-            'class_id' => ['required', 'integer', 'exists:classes,id'],
-            'subject_id' => ['required', 'integer', 'exists:subjects,id'],
+            'class_id' => ['required', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'subject_id' => ['required', 'integer', Rule::exists('subjects', 'id')->where('tenant_id', $tenantId)],
             'exam_type' => ['required', 'in:objective,theory,fill_blank'],
             'duration_minutes' => ['required', 'integer', 'min:5', 'max:600'],
             'question_count' => ['nullable', 'integer', 'min:1', 'max:300'],
@@ -68,9 +79,9 @@ class ExamSubmissionsController extends Controller
             'source_file' => ['nullable', 'file', 'mimes:txt,doc,docx', 'max:10240'],
         ]);
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
@@ -78,8 +89,8 @@ class ExamSubmissionsController extends Controller
         }
 
         // Teacher must be assigned to class and subject.
-        $okClass = DB::table('teacher_class')->where('teacher_id', $teacherId)->where('class_id', (int) $data['class_id'])->exists();
-        $okSub = DB::table('teacher_subject')->where('teacher_id', $teacherId)->where('subject_id', (int) $data['subject_id'])->exists();
+        $okClass = TenantDB::table('teacher_class')->where('teacher_id', $teacherId)->where('class_id', (int) $data['class_id'])->exists();
+        $okSub = TenantDB::table('teacher_subject')->where('teacher_id', $teacherId)->where('subject_id', (int) $data['subject_id'])->exists();
         if (! $okClass || ! $okSub) {
             return response()->json(['message' => 'You are not assigned to this class/subject.'], 403);
         }
@@ -97,13 +108,10 @@ class ExamSubmissionsController extends Controller
             if ($ext !== 'txt') {
                 return response()->json(['message' => 'For objective exams, source_file must be a .txt so the system can parse questions/options.'], 422);
             }
-            if (empty($data['marks_per_question'])) {
-                return response()->json(['message' => 'For objective exams, please provide marks_per_question.'], 422);
-            }
         }
 
-        $school = app('tenant.school');
-        $base = "exams/{$school->subdomain}/submissions/{$currentSession->id}/{$currentTerm->id}/{$data['class_id']}/{$data['subject_id']}/{$teacherId}";
+        // Partition storage by tenant_id to prevent cross-tenant collisions/leakage on shared hosting.
+        $base = "tenants/{$tenantId}/exams/submissions/{$currentSession->id}/{$currentTerm->id}/{$data['class_id']}/{$data['subject_id']}/{$teacherId}";
 
         $paperPdfPath = $request->file('paper_pdf')->store($base, 'public');
 
@@ -115,6 +123,7 @@ class ExamSubmissionsController extends Controller
         }
 
         $id = DB::table('exam_question_submissions')->insertGetId([
+            'tenant_id' => $tenantId,
             'teacher_id' => $teacherId,
             'class_id' => (int) $data['class_id'],
             'subject_id' => (int) $data['subject_id'],
@@ -133,6 +142,7 @@ class ExamSubmissionsController extends Controller
         ]);
 
         DB::table('teacher_activities')->insert([
+            'tenant_id' => $tenantId,
             'teacher_id' => $teacherId,
             'action' => 'exam_question_submitted',
             'metadata' => json_encode([
@@ -153,7 +163,7 @@ class ExamSubmissionsController extends Controller
     public function downloadPaper(Request $request, int $id)
     {
         $teacherId = $request->user()->id;
-        $row = DB::table('exam_question_submissions')->where('id', $id)->where('teacher_id', $teacherId)->first();
+        $row = TenantDB::table('exam_question_submissions')->where('id', $id)->where('teacher_id', $teacherId)->first();
         if (! $row) return response()->json(['message' => 'Submission not found.'], 404);
 
         return Storage::disk('public')->download($row->paper_pdf_path, "exam-paper-{$id}.pdf");
@@ -162,7 +172,7 @@ class ExamSubmissionsController extends Controller
     public function downloadSource(Request $request, int $id)
     {
         $teacherId = $request->user()->id;
-        $row = DB::table('exam_question_submissions')->where('id', $id)->where('teacher_id', $teacherId)->first();
+        $row = TenantDB::table('exam_question_submissions')->where('id', $id)->where('teacher_id', $teacherId)->first();
         if (! $row) return response()->json(['message' => 'Submission not found.'], 404);
         if (! $row->source_file_path) return response()->json(['message' => 'No source file for this submission.'], 404);
 

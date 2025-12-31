@@ -5,20 +5,24 @@ namespace App\Http\Controllers\Tenant\Teacher;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Tenant\Admin\GradingConfigsController;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class ExamsController extends Controller
 {
     public function index(Request $request)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
@@ -26,9 +30,19 @@ class ExamsController extends Controller
         }
 
         $q = DB::table('exams as e')
-            ->join('exam_question_submissions as s', 's.id', '=', 'e.submission_id')
-            ->join('classes as c', 'c.id', '=', 'e.class_id')
-            ->join('subjects as sub', 'sub.id', '=', 'e.subject_id')
+            ->where('e.tenant_id', $tenantId)
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'e.tenant_id');
+            })
+            ->join('classes as c', function ($j) {
+                $j->on('c.id', '=', 'e.class_id')
+                    ->on('c.tenant_id', '=', 'e.tenant_id');
+            })
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 'e.subject_id')
+                    ->on('sub.tenant_id', '=', 'e.tenant_id');
+            })
             ->where('s.teacher_id', $teacherId)
             ->where('e.academic_session_id', $currentSession->id)
             ->where('e.term_id', $currentTerm->id)
@@ -44,6 +58,7 @@ class ExamsController extends Controller
             'e.status',
             'e.started_at',
             'e.ended_at',
+            'e.answer_slip_released_at',
             'e.answer_key',
             'c.name as class_name',
             'sub.name as subject_name',
@@ -61,6 +76,8 @@ class ExamsController extends Controller
                 'status' => $e->status,
                 'started_at' => $e->started_at,
                 'ended_at' => $e->ended_at,
+                'answer_slip_released_at' => $e->answer_slip_released_at,
+                'answer_slip_released' => $e->answer_slip_released_at ? true : false,
                 'has_answer_key' => $key ? true : false,
                 'answer_key' => $key, // Include answer key in response
                 'class_name' => $e->class_name,
@@ -80,6 +97,7 @@ class ExamsController extends Controller
 
     public function setAnswerKey(Request $request, int $examId)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
         $data = $request->validate([
             'answers' => ['required', 'array', 'min:1'],
@@ -88,7 +106,11 @@ class ExamsController extends Controller
         ]);
 
         $exam = DB::table('exams as e')
-            ->join('exam_question_submissions as s', 's.id', '=', 'e.submission_id')
+            ->where('e.tenant_id', $tenantId)
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'e.tenant_id');
+            })
             ->where('e.id', $examId)
             ->where('s.teacher_id', $teacherId)
             ->select(['e.*'])
@@ -121,13 +143,13 @@ class ExamsController extends Controller
             return response()->json(['message' => 'No valid answers provided. Use A-E.'], 422);
         }
 
-        DB::table('exams')->where('id', $examId)->update([
+        DB::table('exams')->where('tenant_id', $tenantId)->where('id', $examId)->update([
             'answer_key' => json_encode($key),
             'updated_at' => now(),
         ]);
 
         // Auto-grade all submitted attempts missing objective_score.
-        $attempts = DB::table('exam_attempts')
+        $attempts = TenantDB::table('exam_attempts')
             ->where('exam_id', $examId)
             ->where('status', 'submitted')
             ->whereNull('objective_score')
@@ -137,22 +159,99 @@ class ExamsController extends Controller
             $score = $this->computeObjectiveScore($a->id, $key, null);
             DB::table('exam_attempts')->where('id', $a->id)->update([
                 'objective_score' => $score,
+                'total_score' => $score,
+                'marked_by' => $teacherId,
+                'marked_at' => now(),
                 'updated_at' => now(),
             ]);
 
-            $studentClassId = (int) (DB::table('student_profiles')->where('user_id', $a->student_id)->value('current_class_id') ?? 0);
-            $this->upsertStudentScoreExam((int) $a->student_id, (int) $exam->subject_id, (int) $exam->academic_session_id, (int) $exam->term_id, $score, $studentClassId);
+            $studentClassId = (int) (TenantDB::table('student_profiles')->where('user_id', $a->student_id)->value('current_class_id') ?? 0);
+            $this->upsertStudentScoreExam($tenantId, (int) $a->student_id, (int) $exam->subject_id, (int) $exam->academic_session_id, (int) $exam->term_id, $score, $studentClassId);
         }
+
+        // Ensure older objective attempts have total_score aligned (for downstream release logic/PDF display).
+        DB::table('exam_attempts')
+            ->where('tenant_id', $tenantId)
+            ->where('exam_id', $examId)
+            ->where('status', 'submitted')
+            ->whereNull('total_score')
+            ->whereNotNull('objective_score')
+            ->update([
+                'total_score' => DB::raw('objective_score'),
+                'marked_by' => DB::raw('COALESCE(marked_by,' . (int) $teacherId . ')'),
+                'marked_at' => DB::raw('COALESCE(marked_at, NOW())'),
+                'updated_at' => now(),
+            ]);
 
         return response()->json(['message' => 'Answer key saved and auto-marking applied where possible.']);
     }
 
-    public function attempts(Request $request, int $examId)
+    public function releaseAnswerSlip(Request $request, int $examId)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
 
         $exam = DB::table('exams as e')
-            ->join('exam_question_submissions as s', 's.id', '=', 'e.submission_id')
+            ->where('e.tenant_id', $tenantId)
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'e.tenant_id');
+            })
+            ->where('e.id', $examId)
+            ->where('s.teacher_id', $teacherId)
+            ->select(['e.id', 'e.exam_type', 'e.answer_slip_released_at'])
+            ->first();
+
+        if (! $exam) return response()->json(['message' => 'Exam not found.'], 404);
+        if ($exam->answer_slip_released_at) return response()->json(['message' => 'Answer slip already released.'], 409);
+
+        $submittedCount = (int) TenantDB::table('exam_attempts')
+            ->where('exam_id', $examId)
+            ->where('status', 'submitted')
+            ->count();
+
+        if ($submittedCount === 0) {
+            return response()->json(['message' => 'No submitted attempts yet.'], 422);
+        }
+
+        // For objective exams we require objective_score; for theory we require total_score (set by marking).
+        $missingMarksCount = (int) TenantDB::table('exam_attempts')
+            ->where('exam_id', $examId)
+            ->where('status', 'submitted')
+            ->when($exam->exam_type === 'objective', function ($q) {
+                $q->whereNull('objective_score');
+            }, function ($q) {
+                $q->whereNull('total_score');
+            })
+            ->count();
+
+        if ($missingMarksCount > 0) {
+            return response()->json([
+                'message' => "Some scripts have not been marked yet. Please mark all {$missingMarksCount} remaining before releasing answer slip.",
+                'remaining' => $missingMarksCount,
+            ], 422);
+        }
+
+        DB::table('exams')->where('tenant_id', $tenantId)->where('id', $examId)->update([
+            'answer_slip_released_at' => now(),
+            'answer_slip_released_by' => $teacherId,
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(['message' => 'Answer slip released successfully.']);
+    }
+
+    public function attempts(Request $request, int $examId)
+    {
+        $tenantId = TenantContext::id();
+        $teacherId = $request->user()->id;
+
+        $exam = DB::table('exams as e')
+            ->where('e.tenant_id', $tenantId)
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'e.tenant_id');
+            })
             ->where('e.id', $examId)
             ->where('s.teacher_id', $teacherId)
             ->select(['e.id', 'e.exam_type'])
@@ -160,8 +259,15 @@ class ExamsController extends Controller
         if (! $exam) return response()->json(['message' => 'Exam not found.'], 404);
 
         $rows = DB::table('exam_attempts as a')
-            ->join('users as u', 'u.id', '=', 'a.student_id')
-            ->leftJoin('student_profiles as sp', 'sp.user_id', '=', 'u.id')
+            ->where('a.tenant_id', $tenantId)
+            ->join('users as u', function ($j) {
+                $j->on('u.id', '=', 'a.student_id')
+                    ->on('u.tenant_id', '=', 'a.tenant_id');
+            })
+            ->leftJoin('student_profiles as sp', function ($j) {
+                $j->on('sp.user_id', '=', 'u.id')
+                    ->on('sp.tenant_id', '=', 'a.tenant_id');
+            })
             ->where('a.exam_id', $examId)
             ->orderByDesc('a.updated_at')
             ->get([
@@ -195,15 +301,35 @@ class ExamsController extends Controller
 
     public function attemptDetail(Request $request, int $attemptId)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
 
         $attempt = DB::table('exam_attempts as a')
-            ->join('exams as e', 'e.id', '=', 'a.exam_id')
-            ->join('exam_question_submissions as s', 's.id', '=', 'e.submission_id')
-            ->join('subjects as sub', 'sub.id', '=', 'e.subject_id')
-            ->join('classes as c', 'c.id', '=', 'e.class_id')
-            ->join('users as u', 'u.id', '=', 'a.student_id')
-            ->leftJoin('student_profiles as sp', 'sp.user_id', '=', 'u.id')
+            ->where('a.tenant_id', $tenantId)
+            ->join('exams as e', function ($j) {
+                $j->on('e.id', '=', 'a.exam_id')
+                    ->on('e.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 'e.subject_id')
+                    ->on('sub.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('classes as c', function ($j) {
+                $j->on('c.id', '=', 'e.class_id')
+                    ->on('c.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('users as u', function ($j) {
+                $j->on('u.id', '=', 'a.student_id')
+                    ->on('u.tenant_id', '=', 'a.tenant_id');
+            })
+            ->leftJoin('student_profiles as sp', function ($j) {
+                $j->on('sp.user_id', '=', 'u.id')
+                    ->on('sp.tenant_id', '=', 'a.tenant_id');
+            })
             ->where('a.id', $attemptId)
             ->where('s.teacher_id', $teacherId)
             ->select([
@@ -225,7 +351,7 @@ class ExamsController extends Controller
 
         if (! $attempt) return response()->json(['message' => 'Attempt not found.'], 404);
 
-        $answers = DB::table('exam_attempt_answers')
+        $answers = TenantDB::table('exam_attempt_answers')
             ->where('attempt_id', $attemptId)
             ->orderBy('question_number')
             ->get()
@@ -265,6 +391,7 @@ class ExamsController extends Controller
 
     public function markAttempt(Request $request, int $attemptId)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
         $data = $request->validate([
             'marks' => ['required', 'array', 'min:1'],
@@ -273,8 +400,15 @@ class ExamsController extends Controller
         ]);
 
         $attempt = DB::table('exam_attempts as a')
-            ->join('exams as e', 'e.id', '=', 'a.exam_id')
-            ->join('exam_question_submissions as s', 's.id', '=', 'e.submission_id')
+            ->where('a.tenant_id', $tenantId)
+            ->join('exams as e', function ($j) {
+                $j->on('e.id', '=', 'a.exam_id')
+                    ->on('e.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'a.tenant_id');
+            })
             ->where('a.id', $attemptId)
             ->where('s.teacher_id', $teacherId)
             ->select(['a.*', 'e.subject_id', 'e.academic_session_id', 'e.term_id'])
@@ -283,11 +417,11 @@ class ExamsController extends Controller
         if ($attempt->status !== 'submitted') return response()->json(['message' => 'Attempt must be submitted before marking.'], 422);
 
         $total = 0;
-        DB::transaction(function () use ($attemptId, $data, &$total) {
+        DB::transaction(function () use ($tenantId, $attemptId, $data, &$total) {
             foreach ($data['marks'] as $m) {
                 DB::table('exam_attempt_answers')->updateOrInsert(
-                    ['attempt_id' => $attemptId, 'question_number' => (int) $m['question_number']],
-                    ['mark' => (int) $m['mark'], 'updated_at' => now(), 'created_at' => now()]
+                    ['tenant_id' => $tenantId, 'attempt_id' => $attemptId, 'question_number' => (int) $m['question_number']],
+                    ['tenant_id' => $tenantId, 'mark' => (int) $m['mark'], 'updated_at' => now(), 'created_at' => now()]
                 );
                 $total += (int) $m['mark'];
             }
@@ -296,30 +430,50 @@ class ExamsController extends Controller
         // For MVP we cap at 100.
         $total = min(100, $total);
 
-        DB::table('exam_attempts')->where('id', $attemptId)->update([
+        DB::table('exam_attempts')->where('tenant_id', $tenantId)->where('id', $attemptId)->update([
             'total_score' => $total,
             'marked_by' => $teacherId,
             'marked_at' => now(),
             'updated_at' => now(),
         ]);
 
-        $studentClassId = (int) (DB::table('student_profiles')->where('user_id', $attempt->student_id)->value('current_class_id') ?? 0);
-        $this->upsertStudentScoreExam((int) $attempt->student_id, (int) $attempt->subject_id, (int) $attempt->academic_session_id, (int) $attempt->term_id, $total, $studentClassId);
+        $studentClassId = (int) (TenantDB::table('student_profiles')->where('user_id', $attempt->student_id)->value('current_class_id') ?? 0);
+        $this->upsertStudentScoreExam($tenantId, (int) $attempt->student_id, (int) $attempt->subject_id, (int) $attempt->academic_session_id, (int) $attempt->term_id, $total, $studentClassId);
 
         return response()->json(['message' => 'Marked.', 'total_score' => $total]);
     }
 
     public function answerSlipPdf(Request $request, int $attemptId)
     {
+        $tenantId = TenantContext::id();
         $teacherId = $request->user()->id;
 
         $attempt = DB::table('exam_attempts as a')
-            ->join('exams as e', 'e.id', '=', 'a.exam_id')
-            ->join('exam_question_submissions as s', 's.id', '=', 'e.submission_id')
-            ->join('subjects as sub', 'sub.id', '=', 'e.subject_id')
-            ->join('classes as c', 'c.id', '=', 'e.class_id')
-            ->join('users as u', 'u.id', '=', 'a.student_id')
-            ->leftJoin('student_profiles as sp', 'sp.user_id', '=', 'u.id')
+            ->where('a.tenant_id', $tenantId)
+            ->join('exams as e', function ($j) {
+                $j->on('e.id', '=', 'a.exam_id')
+                    ->on('e.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('exam_question_submissions as s', function ($j) {
+                $j->on('s.id', '=', 'e.submission_id')
+                    ->on('s.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 'e.subject_id')
+                    ->on('sub.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('classes as c', function ($j) {
+                $j->on('c.id', '=', 'e.class_id')
+                    ->on('c.tenant_id', '=', 'a.tenant_id');
+            })
+            ->join('users as u', function ($j) {
+                $j->on('u.id', '=', 'a.student_id')
+                    ->on('u.tenant_id', '=', 'a.tenant_id');
+            })
+            ->leftJoin('student_profiles as sp', function ($j) {
+                $j->on('sp.user_id', '=', 'u.id')
+                    ->on('sp.tenant_id', '=', 'a.tenant_id');
+            })
             ->where('a.id', $attemptId)
             ->where('s.teacher_id', $teacherId)
             ->select([
@@ -341,7 +495,7 @@ class ExamsController extends Controller
 
         if (! $attempt) return response()->json(['message' => 'Attempt not found.'], 404);
 
-        $answers = DB::table('exam_attempt_answers')
+        $answers = TenantDB::table('exam_attempt_answers')
             ->where('attempt_id', $attemptId)
             ->orderBy('question_number')
             ->get();
@@ -357,10 +511,14 @@ class ExamsController extends Controller
         
         $filename = $studentSlug . '-' . $classSlug . '-' . $subjectSlug . '-exam-slip.pdf';
 
+        $school = app('tenant.school');
+        $schoolName = $school?->name;
+
         $pdf = Pdf::loadView('pdf.exam-answer-slip', [
             'attempt' => $attempt,
             'studentName' => $studentName,
             'answers' => $answers,
+            'schoolName' => $schoolName,
         ]);
 
         return response()->streamDownload(function () use ($pdf) {
@@ -373,7 +531,7 @@ class ExamsController extends Controller
 
     private function computeObjectiveScore(int $attemptId, array $key, ?int $marksPerQuestion): int
     {
-        $answers = DB::table('exam_attempt_answers')->where('attempt_id', $attemptId)->get()->keyBy('question_number');
+        $answers = TenantDB::table('exam_attempt_answers')->where('attempt_id', $attemptId)->get()->keyBy('question_number');
         $score = 0;
         $total = 0;
         
@@ -401,9 +559,10 @@ class ExamsController extends Controller
         return min(100, $score);
     }
 
-    private function upsertStudentScoreExam(int $studentId, int $subjectId, int $sessionId, int $termId, int $examScore, int $studentClassId): void
+    private function upsertStudentScoreExam(string $tenantId, int $studentId, int $subjectId, int $sessionId, int $termId, int $examScore, int $studentClassId): void
     {
         $existing = DB::table('student_scores')->where([
+            'tenant_id' => $tenantId,
             'student_id' => $studentId,
             'subject_id' => $subjectId,
             'academic_session_id' => $sessionId,
@@ -417,12 +576,14 @@ class ExamsController extends Controller
 
         DB::table('student_scores')->updateOrInsert(
             [
+                'tenant_id' => $tenantId,
                 'student_id' => $studentId,
                 'subject_id' => $subjectId,
                 'academic_session_id' => $sessionId,
                 'term_id' => $termId,
             ],
             [
+                'tenant_id' => $tenantId,
                 'ca1' => $ca1,
                 'ca2' => $ca2,
                 'exam' => $examScore,

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -10,8 +12,11 @@ class FeeRulesController extends Controller
 {
     public function index()
     {
-        $rules = DB::table('fee_rules')
-            ->join('classes', 'classes.id', '=', 'fee_rules.class_id')
+        $rules = TenantDB::table('fee_rules')
+            ->join('classes', function ($j) {
+                $j->on('classes.id', '=', 'fee_rules.class_id')
+                    ->on('classes.tenant_id', '=', 'fee_rules.tenant_id');
+            })
             ->select([
                 'fee_rules.*',
                 'classes.name as class_name',
@@ -24,6 +29,8 @@ class FeeRulesController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'class_id' => ['nullable', 'integer', 'exists:classes,id'],
             'class_ids' => ['nullable', 'array', 'min:1'],
@@ -45,19 +52,20 @@ class FeeRulesController extends Controller
         $amountKobo = (int) round(((float) $data['amount_naira']) * 100);
         $label = trim((string) $data['label']);
 
-        $currentSessionId = DB::table('academic_sessions')->where('is_current', true)->value('id');
+        $currentSessionId = TenantDB::table('academic_sessions')->where('is_current', true)->value('id');
 
         $createdIds = [];
         $skipped = 0;
         foreach ($classIds as $cid) {
             // Respect unique(class_id, label); skip duplicates gracefully
-            $exists = DB::table('fee_rules')->where('class_id', $cid)->where('label', $label)->exists();
+            $exists = TenantDB::table('fee_rules')->where('class_id', $cid)->where('label', $label)->exists();
             if ($exists) {
                 $skipped++;
                 continue;
             }
 
             $createdIds[] = DB::table('fee_rules')->insertGetId([
+                'tenant_id' => $tenantId,
                 'class_id' => (int) $cid,
                 'academic_session_id' => $currentSessionId ?: null,
                 'amount_kobo' => $amountKobo,
@@ -93,14 +101,14 @@ class FeeRulesController extends Controller
         if (array_key_exists('label', $data)) $update['label'] = $data['label'];
         if (array_key_exists('description', $data)) $update['description'] = $data['description'];
 
-        DB::table('fee_rules')->where('id', $id)->update($update);
+        TenantDB::table('fee_rules')->where('id', $id)->update($update);
 
         return response()->json(['message' => 'Fee rule updated.']);
     }
 
     public function destroy(int $id)
     {
-        DB::table('fee_rules')->where('id', $id)->delete();
+        TenantDB::table('fee_rules')->where('id', $id)->delete();
         return response()->json(['message' => 'Fee rule deleted.']);
     }
 }

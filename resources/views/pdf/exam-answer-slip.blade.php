@@ -16,6 +16,9 @@
 </head>
 <body>
     <div class="header">
+        @if(!empty($schoolName))
+            <div style="font-size: 18px; font-weight: 800; margin-bottom: 2px;">{{ $schoolName }}</div>
+        @endif
         <div style="font-size: 16px; font-weight: 700;">Exam Answer Slip</div>
         <div class="meta">
             <div><strong>Student:</strong> {{ $studentName }} <span class="small">({{ $attempt->admission_number ?? '' }})</span></div>

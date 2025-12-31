@@ -3,18 +3,23 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class ExamQuestionsController extends Controller
 {
     public function index(Request $request)
     {
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $tenantId = TenantContext::id();
+
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
@@ -22,15 +27,25 @@ class ExamQuestionsController extends Controller
         }
 
         $data = $request->validate([
-            'class_id' => ['nullable', 'integer', 'exists:classes,id'],
-            'subject_id' => ['nullable', 'integer', 'exists:subjects,id'],
+            'class_id' => ['nullable', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'subject_id' => ['nullable', 'integer', Rule::exists('subjects', 'id')->where('tenant_id', $tenantId)],
             'status' => ['nullable', 'in:pending,approved,rejected'],
         ]);
 
         $q = DB::table('exam_question_submissions as s')
-            ->join('classes as c', 'c.id', '=', 's.class_id')
-            ->join('subjects as sub', 'sub.id', '=', 's.subject_id')
-            ->join('users as t', 't.id', '=', 's.teacher_id')
+            ->where('s.tenant_id', $tenantId)
+            ->join('classes as c', function ($j) {
+                $j->on('c.id', '=', 's.class_id')
+                    ->on('c.tenant_id', '=', 's.tenant_id');
+            })
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 's.subject_id')
+                    ->on('sub.tenant_id', '=', 's.tenant_id');
+            })
+            ->join('users as t', function ($j) {
+                $j->on('t.id', '=', 's.teacher_id')
+                    ->on('t.tenant_id', '=', 's.tenant_id');
+            })
             ->where('s.academic_session_id', $currentSession->id)
             ->where('s.term_id', $currentTerm->id);
 
@@ -65,14 +80,14 @@ class ExamQuestionsController extends Controller
 
     public function downloadPaper(int $id)
     {
-        $row = DB::table('exam_question_submissions')->where('id', $id)->first();
+        $row = TenantDB::table('exam_question_submissions')->where('id', $id)->first();
         if (! $row) return response()->json(['message' => 'Submission not found.'], 404);
         return Storage::disk('public')->download($row->paper_pdf_path, "exam-paper-{$id}.pdf");
     }
 
     public function downloadSource(int $id)
     {
-        $row = DB::table('exam_question_submissions')->where('id', $id)->first();
+        $row = TenantDB::table('exam_question_submissions')->where('id', $id)->first();
         if (! $row) return response()->json(['message' => 'Submission not found.'], 404);
         if (! $row->source_file_path) return response()->json(['message' => 'No source file for this submission.'], 404);
         $name = $row->source_file_original_name ?: "exam-source-{$id}";
@@ -81,38 +96,47 @@ class ExamQuestionsController extends Controller
 
     public function approve(Request $request, int $id)
     {
+        $tenantId = TenantContext::id();
         $adminId = $request->user()->id;
-        $row = DB::table('exam_question_submissions')->where('id', $id)->first();
+        $row = TenantDB::table('exam_question_submissions')->where('id', $id)->first();
         if (! $row) return response()->json(['message' => 'Submission not found.'], 404);
         if ($row->status === 'approved') {
             return response()->json(['message' => 'Submission already approved.'], 409);
         }
+
+        $marksPerQuestion = null;
         if ($row->exam_type === 'objective') {
             if (! $row->source_file_path || ! Str::endsWith(strtolower((string) $row->source_file_path), '.txt')) {
                 return response()->json(['message' => 'Objective exams require a TXT source file so the system can parse questions/options for students.'], 422);
             }
-            if (empty($row->marks_per_question) || (int) $row->marks_per_question <= 0) {
-                return response()->json(['message' => 'Objective exams require marks per question. Please ask the teacher to resubmit with marks per question.'], 422);
+            $marksPerQuestion = (int) ($row->marks_per_question ?? 0);
+            if ($marksPerQuestion <= 0) {
+                // Admin supplies marks_per_question at approval time (teacher submission UI does not include it).
+                $data = $request->validate([
+                    'marks_per_question' => ['required', 'integer', 'min:1', 'max:100'],
+                ]);
+                $marksPerQuestion = (int) $data['marks_per_question'];
             }
         }
 
-        return DB::transaction(function () use ($adminId, $row) {
-            DB::table('exam_question_submissions')->where('id', $row->id)->update([
+        return DB::transaction(function () use ($tenantId, $adminId, $row, $marksPerQuestion) {
+            TenantDB::table('exam_question_submissions')->where('id', $row->id)->update([
                 'status' => 'approved',
                 'rejection_reason' => null,
                 'reviewed_by' => $adminId,
                 'reviewed_at' => now(),
+                'marks_per_question' => $row->exam_type === 'objective' ? $marksPerQuestion : $row->marks_per_question,
                 'updated_at' => now(),
             ]);
 
-            $code = $this->generateCode();
+            $code = $this->generateCode($tenantId);
 
             $questions = [];
             if ($row->exam_type === 'objective' && $row->source_file_path && Str::endsWith(strtolower($row->source_file_path), '.txt')) {
                 $txt = Storage::disk('public')->get($row->source_file_path);
                 $questions = $this->parseObjectiveTxt($txt);
                 $count = count($questions);
-                $mpq = (int) ($row->marks_per_question ?? 0);
+                $mpq = (int) ($marksPerQuestion ?? 0);
                 if ($count > 0 && $mpq > 0) {
                     $max = $count * $mpq;
                     if ($max > 100) {
@@ -124,6 +148,7 @@ class ExamQuestionsController extends Controller
             }
 
             $examId = DB::table('exams')->insertGetId([
+                'tenant_id' => $tenantId,
                 'submission_id' => $row->id,
                 'code' => $code,
                 'class_id' => $row->class_id,
@@ -133,7 +158,7 @@ class ExamQuestionsController extends Controller
                 'exam_type' => $row->exam_type,
                 'duration_minutes' => $row->duration_minutes,
                 'question_count' => $row->exam_type === 'objective' ? (count($questions) ?: null) : $row->question_count,
-                'marks_per_question' => $row->marks_per_question,
+                'marks_per_question' => $row->exam_type === 'objective' ? $marksPerQuestion : $row->marks_per_question,
                 'status' => 'approved',
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -143,6 +168,7 @@ class ExamQuestionsController extends Controller
             if ($row->exam_type === 'objective' && !empty($questions)) {
                 foreach ($questions as $q) {
                     DB::table('exam_objective_questions')->insert([
+                        'tenant_id' => $tenantId,
                         'exam_id' => $examId,
                         'question_number' => $q['number'],
                         'question_text' => $q['question'],
@@ -169,15 +195,16 @@ class ExamQuestionsController extends Controller
 
     public function reject(Request $request, int $id)
     {
+        TenantContext::id();
         $adminId = $request->user()->id;
         $data = $request->validate([
             'reason' => ['required', 'string', 'max:2000'],
         ]);
 
-        $row = DB::table('exam_question_submissions')->where('id', $id)->first();
+        $row = TenantDB::table('exam_question_submissions')->where('id', $id)->first();
         if (! $row) return response()->json(['message' => 'Submission not found.'], 404);
 
-        DB::table('exam_question_submissions')->where('id', $id)->update([
+        TenantDB::table('exam_question_submissions')->where('id', $id)->update([
             'status' => 'rejected',
             'rejection_reason' => $data['reason'],
             'reviewed_by' => $adminId,
@@ -188,12 +215,12 @@ class ExamQuestionsController extends Controller
         return response()->json(['message' => 'Submission rejected.']);
     }
 
-    private function generateCode(): string
+    private function generateCode(string $tenantId): string
     {
         // 6-char code, retry if collision.
         for ($i = 0; $i < 20; $i++) {
             $code = strtoupper(Str::random(6));
-            $exists = DB::table('exams')->where('code', $code)->exists();
+            $exists = DB::table('exams')->where('tenant_id', $tenantId)->where('code', $code)->exists();
             if (! $exists) return $code;
         }
         return strtoupper(Str::random(6));
@@ -253,7 +280,8 @@ class ExamQuestionsController extends Controller
 
     public function delete(Request $request, int $id)
     {
-        $row = DB::table('exam_question_submissions')->where('id', $id)->first();
+        TenantContext::id();
+        $row = TenantDB::table('exam_question_submissions')->where('id', $id)->first();
         if (! $row) return response()->json(['message' => 'Submission not found.'], 404);
         if ($row->status !== 'rejected') {
             return response()->json(['message' => 'Only rejected submissions can be deleted.'], 422);
@@ -268,7 +296,7 @@ class ExamQuestionsController extends Controller
         }
 
         // Delete the record
-        DB::table('exam_question_submissions')->where('id', $id)->delete();
+        TenantDB::table('exam_question_submissions')->where('id', $id)->delete();
 
         return response()->json(['message' => 'Submission deleted successfully.']);
     }

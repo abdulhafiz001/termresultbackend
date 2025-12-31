@@ -5,22 +5,27 @@ namespace App\Http\Controllers\Tenant\Teacher;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Tenant\Admin\GradingConfigsController;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class ScoresController extends Controller
 {
     public function listForClassSubject(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
-            'class_id' => ['required', 'integer', 'exists:classes,id'],
-            'subject_id' => ['required', 'integer', 'exists:subjects,id'],
+            'class_id' => ['required', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'subject_id' => ['required', 'integer', Rule::exists('subjects', 'id')->where('tenant_id', $tenantId)],
         ]);
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
@@ -40,8 +45,11 @@ class ScoresController extends Controller
             $classId = (int) $data['class_id'];
 
             // Active grading config (for teacher UI previews).
-            $gradingConfig = DB::table('grading_configs as gc')
-                ->join('grading_config_classes as gcc', 'gcc.grading_config_id', '=', 'gc.id')
+            $gradingConfig = TenantDB::table('grading_configs as gc')
+                ->join('grading_config_classes as gcc', function ($j) {
+                    $j->on('gcc.grading_config_id', '=', 'gc.id')
+                        ->on('gcc.tenant_id', '=', 'gc.tenant_id');
+                })
                 ->where('gc.is_active', true)
                 ->where('gcc.class_id', $classId)
                 ->orderByDesc('gc.id')
@@ -50,14 +58,17 @@ class ScoresController extends Controller
 
             $gradingRanges = collect();
             if ($gradingConfig) {
-                $gradingRanges = DB::table('grading_config_ranges')
+                $gradingRanges = TenantDB::table('grading_config_ranges')
                     ->where('grading_config_id', $gradingConfig->id)
                     ->orderByDesc('min_score')
                     ->get(['grade', 'min_score', 'max_score']);
             }
 
-            $students = DB::table('users')
-                ->join('student_profiles', 'student_profiles.user_id', '=', 'users.id')
+            $students = TenantDB::table('users')
+                ->join('student_profiles', function ($j) {
+                    $j->on('student_profiles.user_id', '=', 'users.id')
+                        ->on('student_profiles.tenant_id', '=', 'users.tenant_id');
+                })
                 ->where('users.role', 'student')
                 ->where('student_profiles.current_class_id', $classId)
                 ->select([
@@ -69,7 +80,7 @@ class ScoresController extends Controller
                 ->orderBy('student_profiles.last_name')
                 ->get();
 
-            $scores = DB::table('student_scores')
+            $scores = TenantDB::table('student_scores')
                 ->where('academic_session_id', $currentSession->id)
                 ->where('term_id', $currentTerm->id)
                 ->where('subject_id', (int) $data['subject_id'])
@@ -111,18 +122,20 @@ class ScoresController extends Controller
 
     public function upsert(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
-            'subject_id' => ['required', 'integer', 'exists:subjects,id'],
-            'student_id' => ['required', 'integer', 'exists:users,id'],
+            'subject_id' => ['required', 'integer', Rule::exists('subjects', 'id')->where('tenant_id', $tenantId)],
+            'student_id' => ['required', 'integer', Rule::exists('users', 'id')->where('tenant_id', $tenantId)],
             'ca1' => ['nullable', 'integer', 'min:0', 'max:100'],
             'ca2' => ['nullable', 'integer', 'min:0', 'max:100'],
             'exam' => ['nullable', 'integer', 'min:0', 'max:100'],
             'remark' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
@@ -136,7 +149,7 @@ class ScoresController extends Controller
 
         $grade = $total === null ? null : $this->gradeFromTotal($total);
 
-        $studentClassId = (int) (DB::table('student_profiles')->where('user_id', (int) $data['student_id'])->value('current_class_id') ?? 0);
+        $studentClassId = (int) (TenantDB::table('student_profiles')->where('user_id', (int) $data['student_id'])->value('current_class_id') ?? 0);
         if ($studentClassId) {
             $cfgGrade = \App\Http\Controllers\Tenant\Admin\GradingConfigsController::gradeForClassTotal($studentClassId, $total);
             if ($cfgGrade !== null) {
@@ -146,12 +159,14 @@ class ScoresController extends Controller
 
         DB::table('student_scores')->updateOrInsert(
             [
+                'tenant_id' => $tenantId,
                 'student_id' => (int) $data['student_id'],
                 'subject_id' => (int) $data['subject_id'],
                 'academic_session_id' => $currentSession->id,
                 'term_id' => $currentTerm->id,
             ],
             [
+                'tenant_id' => $tenantId,
                 'ca1' => $data['ca1'],
                 'ca2' => $data['ca2'],
                 'exam' => $data['exam'],
@@ -166,6 +181,7 @@ class ScoresController extends Controller
 
         // Teacher activity log
         DB::table('teacher_activities')->insert([
+            'tenant_id' => $tenantId,
             'teacher_id' => $request->user()->id,
             'action' => 'score_saved',
             'metadata' => json_encode([

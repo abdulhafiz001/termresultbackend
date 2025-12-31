@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Tenant\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\SchoolClass;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class ClassesController extends Controller
 {
@@ -21,7 +23,7 @@ class ClassesController extends Controller
                 ->orderBy('name')
                 ->get()
                 ->map(function ($c) {
-                    $studentCount = DB::table('student_profiles')
+                    $studentCount = TenantDB::table('student_profiles')
                         ->where('current_class_id', $c->id)
                         ->count();
 
@@ -40,8 +42,15 @@ class ClassesController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
-            'name' => ['required', 'string', 'max:255', 'unique:classes,name'],
+            'name' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('classes', 'name')->where('tenant_id', $tenantId),
+            ],
             'form_teacher_id' => ['nullable', 'integer', 'exists:users,id'],
             'description' => ['nullable', 'string', 'max:2000'],
         ]);
@@ -55,9 +64,18 @@ class ClassesController extends Controller
     public function update(Request $request, int $id)
     {
         $class = SchoolClass::findOrFail($id);
+        $tenantId = TenantContext::id();
 
         $data = $request->validate([
-            'name' => ['sometimes', 'required', 'string', 'max:255', 'unique:classes,name,'.$class->id],
+            'name' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('classes', 'name')
+                    ->ignore($class->id)
+                    ->where('tenant_id', $tenantId),
+            ],
             'form_teacher_id' => ['nullable', 'integer', 'exists:users,id'],
             'description' => ['nullable', 'string', 'max:2000'],
         ]);

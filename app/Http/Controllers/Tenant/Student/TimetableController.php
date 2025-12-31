@@ -3,8 +3,9 @@
 namespace App\Http\Controllers\Tenant\Student;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class TimetableController extends Controller
 {
@@ -16,10 +17,11 @@ class TimetableController extends Controller
 
     public function index(Request $request)
     {
+        TenantContext::id();
         $studentId = $request->user()->id;
 
         // Get student's current class
-        $studentProfile = DB::table('student_profiles')
+        $studentProfile = TenantDB::table('student_profiles')
             ->where('user_id', $studentId)
             ->first();
 
@@ -29,10 +31,19 @@ class TimetableController extends Controller
 
         $classId = (int) $studentProfile->current_class_id;
 
-        $timetables = DB::table('timetables')
-            ->join('classes', 'timetables.class_id', '=', 'classes.id')
-            ->join('subjects', 'timetables.subject_id', '=', 'subjects.id')
-            ->join('users', 'timetables.teacher_id', '=', 'users.id')
+        $timetables = TenantDB::table('timetables')
+            ->join('classes', function ($j) {
+                $j->on('timetables.class_id', '=', 'classes.id')
+                    ->on('timetables.tenant_id', '=', 'classes.tenant_id');
+            })
+            ->join('subjects', function ($j) {
+                $j->on('timetables.subject_id', '=', 'subjects.id')
+                    ->on('timetables.tenant_id', '=', 'subjects.tenant_id');
+            })
+            ->join('users', function ($j) {
+                $j->on('timetables.teacher_id', '=', 'users.id')
+                    ->on('timetables.tenant_id', '=', 'users.tenant_id');
+            })
             ->where(function ($q) use ($classId) {
                 $q->where('timetables.class_id', $classId)
                   ->orWhere(function ($q) use ($classId) {

@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Tenant\Student;
 
 use App\Http\Controllers\Controller;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -14,14 +16,15 @@ class DashboardController extends Controller
     {
         $user = auth()->user();
         $school = app('tenant.school');
+        $tenantId = TenantContext::id();
 
-        $studentProfile = DB::table('student_profiles')->where('user_id', $user->id)->first();
+        $studentProfile = TenantDB::table('student_profiles')->where('user_id', $user->id)->first();
         if (! $studentProfile) {
             return response()->json(['message' => 'Student profile not found'], 404);
         }
 
         $cacheKey = TenantCache::studentDashboardKey((int) $school->id, (int) $user->id);
-        $payload = Cache::remember($cacheKey, now()->addSeconds(60), function () use ($user, $school, $studentProfile) {
+        $payload = Cache::remember($cacheKey, now()->addSeconds(60), function () use ($user, $school, $studentProfile, $tenantId) {
             $theme = $school->theme ?? [];
             if (is_string($theme)) {
                 $theme = json_decode($theme, true) ?? [];
@@ -30,19 +33,19 @@ class DashboardController extends Controller
             // Get class info
             $class = null;
             if (! empty($studentProfile->current_class_id)) {
-                $class = DB::table('classes')
+                $class = TenantDB::table('classes')
                     ->where('id', $studentProfile->current_class_id)
                 ->first();
             }
 
             // Get current session and term
-            $currentSession = DB::table('academic_sessions')
+            $currentSession = TenantDB::table('academic_sessions')
                 ->where('is_current', true)
                 ->first();
 
             $currentTerm = null;
             if ($currentSession) {
-                $currentTerm = DB::table('terms')
+                $currentTerm = TenantDB::table('terms')
                     ->where('academic_session_id', $currentSession->id)
                     ->where('is_current', true)
                     ->first();
@@ -51,12 +54,12 @@ class DashboardController extends Controller
             // Total subjects offered by the student (NOT "subjects recorded").
             $subjectsCount = 0;
             if (Schema::hasTable('student_subject')) {
-                $subjectsCount = (int) DB::table('student_subject')
+                $subjectsCount = (int) TenantDB::table('student_subject')
                     ->where('student_id', $user->id)
                     ->count();
             }
             if ($subjectsCount === 0 && $class && Schema::hasTable('class_subject')) {
-                $subjectsCount = (int) DB::table('class_subject')
+                $subjectsCount = (int) TenantDB::table('class_subject')
                     ->where('class_id', $class->id)
                     ->count();
             }
@@ -65,7 +68,11 @@ class DashboardController extends Controller
             $recentResults = collect([]);
             if ($currentSession && $currentTerm) {
                 $recentResults = DB::table('student_scores')
-                    ->join('subjects', 'student_scores.subject_id', '=', 'subjects.id')
+                    ->where('student_scores.tenant_id', $tenantId)
+                    ->join('subjects', function ($j) {
+                        $j->on('student_scores.subject_id', '=', 'subjects.id')
+                            ->on('subjects.tenant_id', '=', 'student_scores.tenant_id');
+                    })
                     ->where('student_scores.student_id', $user->id)
                     ->where('student_scores.academic_session_id', $currentSession->id)
                     ->where('student_scores.term_id', $currentTerm->id)
@@ -86,7 +93,7 @@ class DashboardController extends Controller
             $attendanceRate = null;
             if ($currentSession && $currentTerm && $class) {
                 // Total days = distinct dates where ANY attendance was recorded for the class (general OR subject).
-                $totalDays = (int) DB::table('attendance_sessions')
+                $totalDays = (int) TenantDB::table('attendance_sessions')
                     ->where('academic_session_id', $currentSession->id)
                     ->where('term_id', $currentTerm->id)
                     ->where('class_id', $class->id)
@@ -96,7 +103,11 @@ class DashboardController extends Controller
                 // Attended days = distinct dates where student has at least one attended status for that date.
                 // If a student has multiple subject records on the same date, it still counts as ONE day.
                 $attendedDays = (int) DB::table('attendance_records')
-                    ->join('attendance_sessions', 'attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                    ->where('attendance_records.tenant_id', $tenantId)
+                    ->join('attendance_sessions', function ($j) {
+                        $j->on('attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                            ->on('attendance_sessions.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
                     ->where('attendance_records.student_id', $user->id)
                     ->where('attendance_sessions.academic_session_id', $currentSession->id)
                     ->where('attendance_sessions.term_id', $currentTerm->id)
@@ -110,7 +121,7 @@ class DashboardController extends Controller
 
             // Get announcements
             $classId = $studentProfile->current_class_id;
-            $announcements = DB::table('announcements')
+            $announcements = TenantDB::table('announcements')
                 ->whereNotNull('published_at')
                 ->where('for_teachers', false)
                 ->where(function ($w) use ($classId) {

@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Services\PaystackService;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -12,7 +14,7 @@ class PaymentSettingsController extends Controller
 {
     public function show()
     {
-        $row = DB::table('payment_settings')->orderByDesc('id')->first();
+        $row = TenantDB::table('payment_settings')->orderByDesc('id')->first();
         $accountNumberLast4 = null;
         if (! empty($row?->paystack_settlement_account_number_enc)) {
             try {
@@ -81,6 +83,8 @@ class PaymentSettingsController extends Controller
 
     public function createPaystackSubaccount(Request $request, PaystackService $paystack)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'bank_code' => ['required', 'string', 'max:20'],
             'bank_name' => ['nullable', 'string', 'max:255'],
@@ -95,7 +99,7 @@ class PaymentSettingsController extends Controller
             return response()->json(['message' => 'Could not resolve account name. Please check the bank and account number.'], 422);
         }
 
-        $existing = DB::table('payment_settings')->orderByDesc('id')->first();
+        $existing = TenantDB::table('payment_settings')->orderByDesc('id')->first();
         $businessName = $data['business_name'] ?? (app('tenant.school')->name ?? 'School');
 
         // Create subaccount via TermResult Paystack (main) account
@@ -122,9 +126,10 @@ class PaymentSettingsController extends Controller
         ];
 
         if ($existing) {
-            DB::table('payment_settings')->where('id', $existing->id)->update($payload);
+            TenantDB::table('payment_settings')->where('id', $existing->id)->update($payload);
         } else {
             DB::table('payment_settings')->insert(array_merge([
+                'tenant_id' => $tenantId,
                 'mode' => 'automatic',
                 'is_enabled' => false,
                 'created_at' => now(),
@@ -142,6 +147,8 @@ class PaymentSettingsController extends Controller
 
     public function update(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'mode' => ['required', 'in:manual,automatic'],
             'is_enabled' => ['required', 'boolean'],
@@ -165,7 +172,7 @@ class PaymentSettingsController extends Controller
             }
         }
 
-        $existing = DB::table('payment_settings')->orderByDesc('id')->first();
+        $existing = TenantDB::table('payment_settings')->orderByDesc('id')->first();
 
         if ($data['mode'] === 'automatic') {
             foreach (['account_name', 'paystack_account_name'] as $k) {
@@ -195,9 +202,12 @@ class PaymentSettingsController extends Controller
         ];
 
         if ($existing) {
-            DB::table('payment_settings')->where('id', $existing->id)->update($payload);
+            TenantDB::table('payment_settings')->where('id', $existing->id)->update($payload);
         } else {
-            DB::table('payment_settings')->insert(array_merge($payload, ['created_at' => now()]));
+            DB::table('payment_settings')->insert(array_merge($payload, [
+                'tenant_id' => $tenantId,
+                'created_at' => now(),
+            ]));
         }
 
         return response()->json(['message' => 'Payment settings saved.']);

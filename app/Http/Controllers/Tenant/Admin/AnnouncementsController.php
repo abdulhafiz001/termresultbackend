@@ -3,14 +3,17 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class AnnouncementsController extends Controller
 {
     public function index()
     {
-        $items = DB::table('announcements')
+        $items = TenantDB::table('announcements')
             ->orderByDesc('created_at')
             ->limit(200)
             ->get()
@@ -32,16 +35,19 @@ class AnnouncementsController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'body' => ['required', 'string', 'max:10000'],
             'for_teachers' => ['boolean'],
             'for_all_students' => ['boolean'],
             'class_ids' => ['array'],
-            'class_ids.*' => ['integer', 'exists:classes,id'],
+            'class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
         ]);
 
         $id = DB::table('announcements')->insertGetId([
+            'tenant_id' => $tenantId,
             'created_by' => $request->user()->id,
             'title' => $data['title'],
             'body' => $data['body'],
@@ -58,13 +64,15 @@ class AnnouncementsController extends Controller
 
     public function update(Request $request, int $id)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'title' => ['sometimes', 'required', 'string', 'max:255'],
             'body' => ['sometimes', 'required', 'string', 'max:10000'],
             'for_teachers' => ['boolean'],
             'for_all_students' => ['boolean'],
             'class_ids' => ['array'],
-            'class_ids.*' => ['integer', 'exists:classes,id'],
+            'class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
         ]);
 
         $update = [];
@@ -74,14 +82,14 @@ class AnnouncementsController extends Controller
         if (array_key_exists('class_ids', $data)) $update['class_ids'] = json_encode($data['class_ids']);
         $update['updated_at'] = now();
 
-        DB::table('announcements')->where('id', $id)->update($update);
+        TenantDB::table('announcements')->where('id', $id)->update($update);
 
         return response()->json(['message' => 'Announcement updated.']);
     }
 
     public function destroy(int $id)
     {
-        DB::table('announcements')->where('id', $id)->delete();
+        TenantDB::table('announcements')->where('id', $id)->delete();
         return response()->json(['message' => 'Announcement deleted.']);
     }
 }

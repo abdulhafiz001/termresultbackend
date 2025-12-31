@@ -14,6 +14,7 @@ use App\Http\Controllers\Platform\DashboardController as PlatformDashboardContro
 use App\Http\Controllers\Platform\OnboardingFlowController as PlatformOnboardingFlowController;
 use App\Http\Controllers\Platform\SchoolsController as PlatformSchoolsController;
 use App\Http\Controllers\Platform\TrafficController as PlatformTrafficController;
+use App\Http\Controllers\Platform\CacheController as PlatformCacheController;
 use App\Http\Controllers\Platform\ReferralsController as PlatformReferralsController;
 use App\Http\Controllers\Platform\ContactMessagesController as PlatformContactMessagesController;
 use App\Http\Controllers\Platform\AdminsController as PlatformAdminsController;
@@ -26,6 +27,7 @@ use App\Http\Controllers\Tenant\Admin\FeeRulesController;
 use App\Http\Controllers\Tenant\Admin\PaymentsController as AdminPaymentsController;
 use App\Http\Controllers\Tenant\Admin\PaymentSettingsController as AdminPaymentSettingsController;
 use App\Http\Controllers\Tenant\Admin\SchoolConfigController;
+use App\Http\Controllers\Tenant\Admin\StorageController as AdminStorageController;
 use App\Http\Controllers\Tenant\Admin\DashboardController;
 use App\Http\Controllers\Tenant\Admin\StudentsController;
 use App\Http\Controllers\Tenant\Admin\SubjectsController;
@@ -53,11 +55,13 @@ use App\Http\Controllers\Tenant\Teacher\ExamSubmissionsController as TeacherExam
 use App\Http\Controllers\Tenant\Teacher\ExamsController as TeacherExamsController;
 use App\Http\Controllers\Tenant\Teacher\AcademicController as TeacherAcademicController;
 use App\Http\Controllers\Tenant\Teacher\AssignmentsController as TeacherAssignmentsController;
+use App\Http\Controllers\Tenant\Teacher\StudyMaterialsController as TeacherStudyMaterialsController;
 use App\Http\Controllers\Tenant\Teacher\SubjectsController as TeacherSubjectsController;
 use App\Http\Controllers\Tenant\Student\ComplaintsController as StudentComplaintsController;
 use App\Http\Controllers\Tenant\Student\MeController as StudentMeController;
 use App\Http\Controllers\Tenant\Student\DashboardController as StudentDashboardController;
 use App\Http\Controllers\Tenant\Student\AcademicController as StudentAcademicController;
+use App\Http\Controllers\Tenant\Student\StudyMaterialsController as StudentStudyMaterialsController;
 use App\Http\Controllers\Tenant\Student\ResultsController as StudentResultsController;
 use App\Http\Controllers\Tenant\Student\ReportCardController as StudentReportCardController;
 use App\Http\Controllers\Tenant\Student\SubjectsController as StudentSubjectsController;
@@ -114,6 +118,7 @@ Route::prefix('platform-admin')->group(function () {
         Route::get('/onboarding-flow/pdf', [PlatformOnboardingFlowController::class, 'download']);
         Route::get('/traffic/daily', [PlatformTrafficController::class, 'daily']);
         Route::get('/traffic/top-schools', [PlatformTrafficController::class, 'topSchools']);
+        Route::post('/cache/clear', [PlatformCacheController::class, 'clear']);
 
         Route::get('/referrals', [PlatformReferralsController::class, 'index']);
         Route::post('/referrals/{id}/status', [PlatformReferralsController::class, 'updateStatus']);
@@ -136,6 +141,7 @@ Route::prefix('platform-admin')->group(function () {
         Route::post('/schools/{id}/restrict-login', [PlatformSchoolsController::class, 'restrictLogin']);
         Route::post('/schools/{id}/restrict-site', [PlatformSchoolsController::class, 'restrictSite']);
         Route::post('/schools/{id}/reset-admin-password', [PlatformSchoolsController::class, 'resetAdminPassword']);
+        Route::post('/schools/{id}/storage-quota', [PlatformSchoolsController::class, 'updateStorageQuota']);
     });
 });
 
@@ -156,6 +162,17 @@ Route::prefix('tenant')->group(function () {
             Route::post('/school-config', [SchoolConfigController::class, 'update']);
             Route::post('/school-config/logo', [SchoolConfigController::class, 'uploadLogo']);
             Route::delete('/school-config/logo', [SchoolConfigController::class, 'deleteLogo']);
+
+            // Storage usage + backup/cleanup (tenant-scoped)
+            Route::get('/storage/usage', [AdminStorageController::class, 'usage']);
+            Route::post('/storage/backup', [AdminStorageController::class, 'backupInit']);
+            Route::get('/storage/backup/{token}/download', [AdminStorageController::class, 'backupDownload']);
+            Route::post('/storage/cleanup', [AdminStorageController::class, 'cleanup']);
+
+            // Storage backup/cleanup for past academic session/term (files only)
+            Route::post('/storage/backup-session-term', [AdminStorageController::class, 'backupSessionTerm']);
+            Route::get('/storage/backup-scope/{token}/download', [AdminStorageController::class, 'backupScopeDownload']);
+            Route::post('/storage/cleanup-scope', [AdminStorageController::class, 'cleanupScope']);
 
             // School landing page management.
             Route::get('/landing-page', [AdminLandingPageController::class, 'show']);
@@ -197,6 +214,7 @@ Route::prefix('tenant')->group(function () {
             Route::delete('/announcements/{id}', [AnnouncementsController::class, 'destroy']);
 
             Route::get('/complaints', [AdminComplaintsController::class, 'index']);
+            Route::get('/complaints/unread-count', [AdminComplaintsController::class, 'unreadCount']);
             Route::put('/complaints/{id}', [AdminComplaintsController::class, 'update']);
 
             Route::get('/fees/rules', [FeeRulesController::class, 'index']);
@@ -300,6 +318,7 @@ Route::prefix('tenant')->group(function () {
 
             Route::get('/exams', [TeacherExamsController::class, 'index']);
             Route::post('/exams/{examId}/answer-key', [TeacherExamsController::class, 'setAnswerKey']);
+            Route::post('/exams/{examId}/release-answer-slip', [TeacherExamsController::class, 'releaseAnswerSlip']);
             Route::get('/exams/{examId}/attempts', [TeacherExamsController::class, 'attempts']);
             Route::get('/attempts/{attemptId}', [TeacherExamsController::class, 'attemptDetail']);
             Route::post('/attempts/{attemptId}/mark', [TeacherExamsController::class, 'markAttempt']);
@@ -310,6 +329,12 @@ Route::prefix('tenant')->group(function () {
             Route::post('/assignments', [TeacherAssignmentsController::class, 'store']);
             Route::get('/assignments/submissions', [TeacherAssignmentsController::class, 'getSubmissions']);
             Route::post('/assignments/submissions/{submissionId}/mark', [TeacherAssignmentsController::class, 'markSubmission']);
+
+            // Study materials (teacher)
+            Route::get('/study-materials', [TeacherStudyMaterialsController::class, 'index']);
+            Route::post('/study-materials', [TeacherStudyMaterialsController::class, 'store']);
+            Route::get('/study-materials/{id}/download', [TeacherStudyMaterialsController::class, 'download']);
+            Route::delete('/study-materials/{id}', [TeacherStudyMaterialsController::class, 'destroy']);
 
             // Import students (teacher)
             Route::post('/students/import', [TeacherStudentsController::class, 'import']);
@@ -340,17 +365,23 @@ Route::prefix('tenant')->group(function () {
             Route::get('/payments/{id}/receipt', [StudentPaymentsController::class, 'receipt']);
 
             // Exams (student)
+            Route::get('/exams/answer-slips', [StudentExamsController::class, 'answerSlips']);
             Route::post('/exams/resolve-code', [StudentExamsController::class, 'resolveCode']);
             Route::post('/exams/{examId}/begin', [StudentExamsController::class, 'begin']);
             Route::get('/exams/{examId}/paper', [StudentExamsController::class, 'paper']);
             Route::post('/exams/{examId}/heartbeat', [StudentExamsController::class, 'heartbeat']);
             Route::post('/exams/{examId}/save', [StudentExamsController::class, 'saveAnswers']);
             Route::post('/exams/{examId}/submit', [StudentExamsController::class, 'submit']);
+            Route::get('/attempts/{attemptId}/answer-slip', [StudentExamsController::class, 'answerSlipPdf']);
 
             // Assignments (student)
             Route::get('/assignments', [StudentAssignmentsController::class, 'index']);
             Route::get('/assignments/{assignmentId}', [StudentAssignmentsController::class, 'show']);
             Route::post('/assignments/{assignmentId}/submit', [StudentAssignmentsController::class, 'submit']);
+
+            // Study materials (student)
+            Route::get('/study-materials', [StudentStudyMaterialsController::class, 'index']);
+            Route::get('/study-materials/{id}/download', [StudentStudyMaterialsController::class, 'download']);
         });
 });
 

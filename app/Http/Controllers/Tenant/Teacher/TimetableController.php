@@ -3,8 +3,9 @@
 namespace App\Http\Controllers\Tenant\Teacher;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class TimetableController extends Controller
 {
@@ -16,11 +17,18 @@ class TimetableController extends Controller
 
     public function index(Request $request)
     {
+        TenantContext::id();
         $teacherId = $request->user()->id;
 
-        $timetables = DB::table('timetables')
-            ->join('classes', 'timetables.class_id', '=', 'classes.id')
-            ->join('subjects', 'timetables.subject_id', '=', 'subjects.id')
+        $timetables = TenantDB::table('timetables')
+            ->join('classes', function ($j) {
+                $j->on('timetables.class_id', '=', 'classes.id')
+                    ->on('timetables.tenant_id', '=', 'classes.tenant_id');
+            })
+            ->join('subjects', function ($j) {
+                $j->on('timetables.subject_id', '=', 'subjects.id')
+                    ->on('timetables.tenant_id', '=', 'subjects.tenant_id');
+            })
             ->where('timetables.teacher_id', $teacherId)
             ->select([
                 'timetables.id',

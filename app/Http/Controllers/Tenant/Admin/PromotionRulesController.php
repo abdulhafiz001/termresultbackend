@@ -3,15 +3,19 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\Rule;
 
 class PromotionRulesController extends Controller
 {
     public function index()
     {
-        $items = DB::table('promotion_rules')
+        TenantContext::id();
+        $items = TenantDB::table('promotion_rules')
             ->orderByDesc('is_active')
             ->orderByDesc('id')
             ->get()
@@ -34,6 +38,7 @@ class PromotionRulesController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'type' => ['required', 'in:all_students_promote,minimum_grades_required,minimum_average_score,minimum_subjects_passed'],
@@ -44,10 +49,11 @@ class PromotionRulesController extends Controller
 
         return DB::transaction(function () use ($request, $data) {
             if (! empty($data['is_active'])) {
-                DB::table('promotion_rules')->update(['is_active' => false, 'updated_at' => now()]);
+                TenantDB::table('promotion_rules')->update(['is_active' => false, 'updated_at' => now()]);
             }
 
             $id = DB::table('promotion_rules')->insertGetId([
+                'tenant_id' => TenantContext::id(),
                 'name' => $data['name'],
                 'type' => $data['type'],
                 'description' => $data['description'] ?? null,
@@ -64,6 +70,7 @@ class PromotionRulesController extends Controller
 
     public function update(Request $request, int $id)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'type' => ['required', 'in:all_students_promote,minimum_grades_required,minimum_average_score,minimum_subjects_passed'],
@@ -73,16 +80,16 @@ class PromotionRulesController extends Controller
         ]);
 
         return DB::transaction(function () use ($id, $data) {
-            $exists = DB::table('promotion_rules')->where('id', $id)->exists();
+            $exists = TenantDB::table('promotion_rules')->where('id', $id)->exists();
             if (! $exists) {
                 return response()->json(['message' => 'Promotion rule not found.'], 404);
             }
 
             if (! empty($data['is_active'])) {
-                DB::table('promotion_rules')->update(['is_active' => false, 'updated_at' => now()]);
+                TenantDB::table('promotion_rules')->update(['is_active' => false, 'updated_at' => now()]);
             }
 
-            DB::table('promotion_rules')->where('id', $id)->update([
+            TenantDB::table('promotion_rules')->where('id', $id)->update([
                 'name' => $data['name'],
                 'type' => $data['type'],
                 'description' => $data['description'] ?? null,
@@ -97,7 +104,8 @@ class PromotionRulesController extends Controller
 
     public function destroy(int $id)
     {
-        $deleted = DB::table('promotion_rules')->where('id', $id)->delete();
+        TenantContext::id();
+        $deleted = TenantDB::table('promotion_rules')->where('id', $id)->delete();
         if (! $deleted) {
             return response()->json(['message' => 'Promotion rule not found.'], 404);
         }
@@ -106,16 +114,17 @@ class PromotionRulesController extends Controller
 
     public function run(Request $request)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
-            'class_id' => ['nullable', 'integer', 'exists:classes,id'],
+            'class_id' => ['nullable', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'class_ids' => ['nullable', 'array', 'min:1'],
-            'class_ids.*' => ['integer', 'exists:classes,id'],
-            'promotion_rule_id' => ['nullable', 'integer', 'exists:promotion_rules,id'],
+            'class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'promotion_rule_id' => ['nullable', 'integer', Rule::exists('promotion_rules', 'id')->where('tenant_id', $tenantId)],
         ]);
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         if (! $currentSession || ! $currentTerm) {
@@ -139,9 +148,9 @@ class PromotionRulesController extends Controller
 
         $rule = null;
         if (! empty($data['promotion_rule_id'])) {
-            $rule = DB::table('promotion_rules')->where('id', (int) $data['promotion_rule_id'])->first();
+            $rule = TenantDB::table('promotion_rules')->where('id', (int) $data['promotion_rule_id'])->first();
         } else {
-            $rule = DB::table('promotion_rules')->where('is_active', true)->orderByDesc('id')->first();
+            $rule = TenantDB::table('promotion_rules')->where('is_active', true)->orderByDesc('id')->first();
         }
 
         if (! $rule) {
@@ -149,7 +158,7 @@ class PromotionRulesController extends Controller
         }
 
         // Run multiple classes in one click (processed top-down to avoid double-promotion).
-        $classIdRows = DB::table('classes')->whereIn('id', $classIds)->get(['id', 'name']);
+        $classIdRows = TenantDB::table('classes')->whereIn('id', $classIds)->get(['id', 'name']);
         $order = $classIdRows
             ->map(function ($c) {
                 $p = $this->parseClassSeries((string) $c->name);
@@ -197,17 +206,6 @@ class PromotionRulesController extends Controller
             'message' => 'Promotion run completed.',
             'results' => $results,
         ]);
-
-        $criteria = $rule->criteria;
-        if (is_string($criteria)) $criteria = json_decode($criteria, true) ?? [];
-        if (! is_array($criteria)) $criteria = [];
-
-        $passMark = (int) ($criteria['pass_mark'] ?? 40);
-        $minAverage = (float) ($criteria['min_average'] ?? 50);
-        $minSubjectsPassed = (int) ($criteria['min_subjects_passed'] ?? (int) ceil($subjects->count() * 0.5));
-        $minGrade = strtoupper((string) ($criteria['min_grade'] ?? 'E'));
-
-        // (the actual work is moved into runPromotionForClass())
     }
 
     private function meetsPromotionRule(string $type, $scores, array $opts): bool
@@ -268,14 +266,21 @@ class PromotionRulesController extends Controller
 
     private function teacherMapForClassSubjects(int $classId): array
     {
+        TenantContext::id();
         // Teachers eligible for (class_id, subject_id) are those assigned to that class AND assigned to that subject.
         $classTable = Schema::hasTable('teacher_class') ? 'teacher_class' : (Schema::hasTable('teacher_classes') ? 'teacher_classes' : null);
         $subjectTable = Schema::hasTable('teacher_subject') ? 'teacher_subject' : (Schema::hasTable('teacher_subjects') ? 'teacher_subjects' : null);
         if (! $classTable || ! $subjectTable) return [];
 
-        $rows = DB::table($classTable . ' as tc')
-            ->join($subjectTable . ' as ts', 'ts.teacher_id', '=', 'tc.teacher_id')
-            ->join('users as u', 'u.id', '=', 'tc.teacher_id')
+        $rows = TenantDB::table($classTable . ' as tc', 'tc.tenant_id')
+            ->join($subjectTable . ' as ts', function ($j) {
+                $j->on('ts.teacher_id', '=', 'tc.teacher_id')
+                    ->on('ts.tenant_id', '=', 'tc.tenant_id');
+            })
+            ->join('users as u', function ($j) {
+                $j->on('u.id', '=', 'tc.teacher_id')
+                    ->on('u.tenant_id', '=', 'tc.tenant_id');
+            })
             ->where('tc.class_id', $classId)
             ->where('u.role', 'teacher')
             ->select([
@@ -316,7 +321,9 @@ class PromotionRulesController extends Controller
 
     private function runPromotionForClass(int $classId, string $className, $rule, $currentSession, $currentTerm): array
     {
-        $alreadyRun = DB::table('student_promotions')
+        $tenantId = TenantContext::id();
+
+        $alreadyRun = TenantDB::table('student_promotions')
             ->where('academic_session_id', $currentSession->id)
             ->where('term_id', $currentTerm->id)
             ->where('from_class_id', $classId)
@@ -332,23 +339,27 @@ class PromotionRulesController extends Controller
         }
 
         // Exclude students already processed by promotion in this session/term (prevents double-promotion).
-        $students = DB::table('users')
-            ->join('student_profiles', 'student_profiles.user_id', '=', 'users.id')
+        $students = TenantDB::table('users as u', 'u.tenant_id')
+            ->join('student_profiles as prof', function ($j) {
+                $j->on('prof.user_id', '=', 'u.id')
+                    ->on('prof.tenant_id', '=', 'u.tenant_id');
+            })
             ->leftJoin('student_promotions as sp', function ($join) use ($currentSession, $currentTerm) {
-                $join->on('sp.student_id', '=', 'users.id')
+                $join->on('sp.student_id', '=', 'u.id')
+                    ->on('sp.tenant_id', '=', 'u.tenant_id')
                     ->where('sp.academic_session_id', '=', $currentSession->id)
                     ->where('sp.term_id', '=', $currentTerm->id);
             })
-            ->where('users.role', 'student')
-            ->where('student_profiles.current_class_id', $classId)
+            ->where('u.role', 'student')
+            ->where('prof.current_class_id', $classId)
             ->whereNull('sp.id')
             ->select([
-                'users.id as student_id',
-                'users.admission_number',
-                'student_profiles.first_name',
-                'student_profiles.last_name',
+                'u.id as student_id',
+                'u.admission_number',
+                'prof.first_name',
+                'prof.last_name',
             ])
-            ->orderBy('student_profiles.last_name')
+            ->orderBy('prof.last_name')
             ->get();
 
         if ($students->isEmpty()) {
@@ -366,7 +377,7 @@ class PromotionRulesController extends Controller
         // Determine subjects (same logic as before).
         $subjectIds = [];
         if (Schema::hasTable('class_subject')) {
-            $subjectIds = DB::table('class_subject')
+            $subjectIds = TenantDB::table('class_subject')
                 ->where('class_id', $classId)
                 ->pluck('subject_id')
                 ->map(fn ($x) => (int) $x)
@@ -375,7 +386,7 @@ class PromotionRulesController extends Controller
                 ->all();
         }
         if (empty($subjectIds) && Schema::hasTable('student_subject')) {
-            $subjectIds = DB::table('student_subject')
+            $subjectIds = TenantDB::table('student_subject')
                 ->whereIn('student_id', $studentIds)
                 ->pluck('subject_id')
                 ->map(fn ($x) => (int) $x)
@@ -384,7 +395,7 @@ class PromotionRulesController extends Controller
                 ->all();
         }
         if (empty($subjectIds)) {
-            $subjectIds = DB::table('student_scores')
+            $subjectIds = TenantDB::table('student_scores')
                 ->whereIn('student_id', $studentIds)
                 ->where('academic_session_id', $currentSession->id)
                 ->where('term_id', $currentTerm->id)
@@ -407,7 +418,7 @@ class PromotionRulesController extends Controller
             ];
         }
 
-        $subjects = DB::table('subjects')
+        $subjects = TenantDB::table('subjects')
             ->whereIn('id', $subjectIds)
             ->select(['id', 'name', 'code'])
             ->orderBy('name')
@@ -423,7 +434,7 @@ class PromotionRulesController extends Controller
         }
 
         // Completeness check.
-        $scoresMap = DB::table('student_scores')
+        $scoresMap = TenantDB::table('student_scores')
             ->whereIn('student_id', $studentIds)
             ->whereIn('subject_id', $subjectIds)
             ->where('academic_session_id', $currentSession->id)
@@ -488,6 +499,7 @@ class PromotionRulesController extends Controller
         $graduated = 0;
 
         DB::transaction(function () use (
+            $tenantId,
             $students,
             $subjects,
             $currentSession,
@@ -504,18 +516,18 @@ class PromotionRulesController extends Controller
             &$repeated,
             &$graduated
         ) {
-            $firstTermId = DB::table('terms')
+            $firstTermId = TenantDB::table('terms')
                 ->where('academic_session_id', $currentSession->id)
                 ->whereRaw('LOWER(TRIM(name)) = ?', ['first term'])
                 ->value('id');
-            $secondTermId = DB::table('terms')
+            $secondTermId = TenantDB::table('terms')
                 ->where('academic_session_id', $currentSession->id)
                 ->whereRaw('LOWER(TRIM(name)) = ?', ['second term'])
                 ->value('id');
             $thirdTermId = $currentTerm->id;
 
             foreach ($students as $s) {
-                $scores = DB::table('student_scores')
+                $scores = TenantDB::table('student_scores')
                     ->where('student_id', $s->student_id)
                     ->where('academic_session_id', $currentSession->id)
                     ->where('term_id', $currentTerm->id)
@@ -539,7 +551,7 @@ class PromotionRulesController extends Controller
                 if ($rule->type === 'minimum_average_score') {
                     $termAvg = function (?int $termId) use ($s, $subjects, $currentSession): ?float {
                         if (! $termId) return null;
-                        $rows = DB::table('student_scores')
+                        $rows = TenantDB::table('student_scores')
                             ->where('student_id', $s->student_id)
                             ->where('academic_session_id', $currentSession->id)
                             ->where('term_id', $termId)
@@ -566,6 +578,7 @@ class PromotionRulesController extends Controller
                 }
 
                 DB::table('student_promotions')->insert([
+                    'tenant_id' => $tenantId,
                     'promotion_rule_id' => $rule->id,
                     'student_id' => $s->student_id,
                     'academic_session_id' => $currentSession->id,
@@ -587,7 +600,7 @@ class PromotionRulesController extends Controller
                 ]);
 
                 if ($status === 'promoted' && $toClassId) {
-                    DB::table('student_profiles')
+                    TenantDB::table('student_profiles')
                         ->where('user_id', $s->student_id)
                         ->update(['current_class_id' => $toClassId, 'updated_at' => now()]);
                     $promoted++;
@@ -619,11 +632,12 @@ class PromotionRulesController extends Controller
 
     private function nextClassIdForPromotion(int $classId): ?int
     {
-        $from = DB::table('classes')->where('id', $classId)->first(['id', 'name']);
+        TenantContext::id();
+        $from = TenantDB::table('classes')->where('id', $classId)->first(['id', 'name']);
         if (! $from) return null;
 
         $parsed = $this->parseClassSeries((string) $from->name);
-        $all = DB::table('classes')->select(['id', 'name'])->get();
+        $all = TenantDB::table('classes')->select(['id', 'name'])->get();
 
         // Fallback: next higher ID (legacy behavior) when name cannot be parsed.
         if (! $parsed) {

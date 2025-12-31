@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Tenant\Student;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
@@ -12,10 +14,11 @@ class AnnouncementsController extends Controller
     public function index(Request $request)
     {
         $studentId = $request->user()->id;
-        $profile = DB::table('student_profiles')->where('user_id', $studentId)->first();
+        $tenantId = TenantContext::id();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $studentId)->first();
         $classId = $profile?->current_class_id;
 
-        $query = DB::table('announcements')->orderByDesc('published_at');
+        $query = TenantDB::table('announcements')->orderByDesc('published_at');
 
         $query->where(function ($w) use ($classId) {
             $w->where('for_all_students', true);
@@ -32,7 +35,7 @@ class AnnouncementsController extends Controller
         });
 
         $items = $query->limit(200)->get()->map(function ($a) use ($studentId) {
-            $isRead = DB::table('announcement_views')
+            $isRead = TenantDB::table('announcement_views')
                 ->where('announcement_id', $a->id)
                 ->where('user_id', $studentId)
                 ->exists();
@@ -52,10 +55,11 @@ class AnnouncementsController extends Controller
     public function unreadCount(Request $request)
     {
         $studentId = $request->user()->id;
-        $profile = DB::table('student_profiles')->where('user_id', $studentId)->first();
+        $tenantId = TenantContext::id();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $studentId)->first();
         $classId = $profile?->current_class_id;
 
-        $query = DB::table('announcements')->orderByDesc('published_at');
+        $query = TenantDB::table('announcements')->orderByDesc('published_at');
 
         $query->where(function ($w) use ($classId) {
             $w->where('for_all_students', true);
@@ -70,10 +74,11 @@ class AnnouncementsController extends Controller
             }
         });
 
-        $total = $query->whereNotIn('id', function ($subQuery) use ($studentId) {
+        $total = $query->whereNotIn('id', function ($subQuery) use ($studentId, $tenantId) {
             $subQuery->select('announcement_id')
                 ->from('announcement_views')
                 ->where('user_id', $studentId);
+            $subQuery->where('tenant_id', $tenantId);
         })->count();
 
         return response()->json(['count' => $total]);
@@ -82,8 +87,10 @@ class AnnouncementsController extends Controller
     public function markAsRead(Request $request, int $id)
     {
         $studentId = $request->user()->id;
+        $tenantId = TenantContext::id();
         
         DB::table('announcement_views')->insertOrIgnore([
+            'tenant_id' => $tenantId,
             'announcement_id' => $id,
             'user_id' => $studentId,
             'viewed_at' => now(),

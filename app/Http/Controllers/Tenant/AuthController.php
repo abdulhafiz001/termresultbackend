@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Tenant;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\TenantLoginRequest;
 use App\Models\User;
+use App\Support\TenantContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Http\Request;
@@ -83,7 +84,9 @@ class AuthController extends Controller
         if ($role === 'teacher') {
             // Guard against tenants that haven't run newer migrations yet.
             if (Schema::hasTable('teacher_activities')) {
+                $tenantId = TenantContext::id();
                 DB::table('teacher_activities')->insert([
+                    'tenant_id' => $tenantId,
                     'teacher_id' => $user->id,
                     'action' => 'teacher_login',
                     'metadata' => json_encode(['role' => $role]),

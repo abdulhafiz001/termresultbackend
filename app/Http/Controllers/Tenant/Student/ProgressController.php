@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Tenant\Student;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -12,20 +13,23 @@ class ProgressController extends Controller
     {
         $user = $request->user();
         
-        $profile = DB::table('student_profiles')->where('user_id', $user->id)->first();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $user->id)->first();
         if (!$profile) {
             return response()->json(['message' => 'Student profile not found'], 404);
         }
 
         $class = $profile->current_class_id 
-            ? DB::table('classes')->where('id', $profile->current_class_id)->first() 
+            ? TenantDB::table('classes')->where('id', $profile->current_class_id)->first() 
             : null;
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
 
         // Get all sessions for this student's results
-        $sessionsWithResults = DB::table('student_scores')
-            ->join('academic_sessions', 'student_scores.academic_session_id', '=', 'academic_sessions.id')
+        $sessionsWithResults = TenantDB::table('student_scores')
+            ->join('academic_sessions', function ($j) {
+                $j->on('student_scores.academic_session_id', '=', 'academic_sessions.id')
+                    ->on('academic_sessions.tenant_id', '=', 'student_scores.tenant_id');
+            })
             ->where('student_scores.student_id', $user->id)
             ->select('academic_sessions.id', 'academic_sessions.name', 'academic_sessions.start_date')
             ->distinct()
@@ -35,7 +39,7 @@ class ProgressController extends Controller
         $progressData = [];
 
         foreach ($sessionsWithResults as $session) {
-            $terms = DB::table('terms')
+            $terms = TenantDB::table('terms')
                 ->where('academic_session_id', $session->id)
                 ->orderBy('id')
                 ->get();
@@ -50,7 +54,7 @@ class ProgressController extends Controller
                 // IMPORTANT: This endpoint must NOT expose detailed subject scores/grades,
                 // because students could bypass "results restriction" by checking progress.
                 // We only return safe aggregates (term averages and counts).
-                $stats = DB::table('student_scores')
+                $stats = TenantDB::table('student_scores')
                     ->where('student_id', $user->id)
                     ->where('academic_session_id', $session->id)
                     ->where('term_id', $term->id)
@@ -69,11 +73,11 @@ class ProgressController extends Controller
                 $position = null;
                 $totalStudents = null;
                 if ($class) {
-                    $classStudents = DB::table('student_profiles')
+                    $classStudents = TenantDB::table('student_profiles')
                         ->where('current_class_id', $class->id)
                         ->pluck('user_id');
 
-                    $classAverages = DB::table('student_scores')
+                    $classAverages = TenantDB::table('student_scores')
                         ->whereIn('student_id', $classStudents)
                         ->where('academic_session_id', $session->id)
                         ->where('term_id', $term->id)

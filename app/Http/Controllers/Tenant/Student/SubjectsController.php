@@ -3,8 +3,9 @@
 namespace App\Http\Controllers\Tenant\Student;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class SubjectsController extends Controller
@@ -12,9 +13,10 @@ class SubjectsController extends Controller
     public function index(Request $request)
     {
         $studentId = $request->user()->id;
+        $tenantId = TenantContext::id();
 
         // Get student's current class
-        $studentProfile = DB::table('student_profiles')
+        $studentProfile = TenantDB::table('student_profiles')
             ->where('user_id', $studentId)
             ->first();
 
@@ -27,7 +29,7 @@ class SubjectsController extends Controller
         // Prefer subjects the student offers; fallback to class subjects.
         $subjectIds = [];
         if (Schema::hasTable('student_subject')) {
-            $subjectIds = DB::table('student_subject')
+            $subjectIds = TenantDB::table('student_subject')
                 ->where('student_id', $studentId)
                 ->pluck('subject_id')
                 ->map(fn ($x) => (int) $x)
@@ -35,7 +37,7 @@ class SubjectsController extends Controller
                 ->all();
         }
         if (empty($subjectIds) && Schema::hasTable('class_subject')) {
-            $subjectIds = DB::table('class_subject')
+            $subjectIds = TenantDB::table('class_subject')
                 ->where('class_id', $classId)
                 ->pluck('subject_id')
                 ->map(fn ($x) => (int) $x)
@@ -47,21 +49,30 @@ class SubjectsController extends Controller
             return response()->json(['data' => []]);
         }
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         // Get subjects (only the ones the student offers) with teacher info for the student's class.
         // IMPORTANT: Do NOT filter on teacher_class in WHERE, otherwise subjects with no assigned teacher disappear.
-        $subjects = DB::table('subjects')
-            ->leftJoin('teacher_subject', 'subjects.id', '=', 'teacher_subject.subject_id')
+        $subjects = TenantDB::table('subjects')
+            ->leftJoin('teacher_subject', function ($j) {
+                $j->on('subjects.id', '=', 'teacher_subject.subject_id')
+                    ->on('teacher_subject.tenant_id', '=', 'subjects.tenant_id');
+            })
             ->leftJoin('teacher_class', function ($join) use ($studentProfile) {
                 $join->on('teacher_subject.teacher_id', '=', 'teacher_class.teacher_id')
                      ->where('teacher_class.class_id', '=', $studentProfile->current_class_id);
             })
-            ->leftJoin('users', 'teacher_subject.teacher_id', '=', 'users.id')
-            ->leftJoin('classes', 'teacher_class.class_id', '=', 'classes.id')
+            ->leftJoin('users', function ($j) {
+                $j->on('teacher_subject.teacher_id', '=', 'users.id')
+                    ->on('users.tenant_id', '=', 'teacher_subject.tenant_id');
+            })
+            ->leftJoin('classes', function ($j) {
+                $j->on('teacher_class.class_id', '=', 'classes.id')
+                    ->on('classes.tenant_id', '=', 'teacher_class.tenant_id');
+            })
             ->whereIn('subjects.id', $subjectIds)
             ->select([
                 'subjects.id',
@@ -76,10 +87,10 @@ class SubjectsController extends Controller
             ->get();
 
         // Attach attendance stats per subject (current session/term), capped at 100%.
-        $subjects = $subjects->map(function ($s) use ($studentId, $classId, $currentSession, $currentTerm) {
+        $subjects = $subjects->map(function ($s) use ($tenantId, $studentId, $classId, $currentSession, $currentTerm) {
             $attendance = null;
             if ($currentSession && $currentTerm) {
-                $totalDays = (int) DB::table('attendance_sessions')
+                $totalDays = (int) TenantDB::table('attendance_sessions')
                     ->where('academic_session_id', $currentSession->id)
                     ->where('term_id', $currentTerm->id)
                     ->where('class_id', $classId)
@@ -87,8 +98,11 @@ class SubjectsController extends Controller
                     ->distinct('date')
                     ->count('date');
 
-                $attended = (int) DB::table('attendance_records')
-                    ->join('attendance_sessions', 'attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                $attended = (int) TenantDB::table('attendance_records')
+                    ->join('attendance_sessions', function ($j) {
+                        $j->on('attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                            ->on('attendance_sessions.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
                     ->where('attendance_records.student_id', $studentId)
                     ->where('attendance_sessions.academic_session_id', $currentSession->id)
                     ->where('attendance_sessions.term_id', $currentTerm->id)

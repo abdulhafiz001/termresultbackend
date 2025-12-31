@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Mail\SchoolPaymentReceived;
 use App\Services\PaystackService;
 use App\Support\TenantCache;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -21,18 +23,18 @@ class PaymentsController extends Controller
 
         if (! \Schema::hasColumn('payments', 'school_notified_at')) return;
 
-        $payment = DB::table('payments')->where('reference', $reference)->first();
+        $payment = TenantDB::table('payments')->where('reference', $reference)->first();
         if (! $payment || ($payment->status ?? null) !== 'success') return;
         if (! empty($payment->school_notified_at)) return;
 
         try {
-            $student = DB::table('users')->where('id', (int) $payment->student_id)->first();
-            $profile = DB::table('student_profiles')->where('user_id', (int) $payment->student_id)->first();
-            $class = $payment->class_id ? DB::table('classes')->where('id', (int) $payment->class_id)->first() : null;
+            $student = TenantDB::table('users')->where('id', (int) $payment->student_id)->first();
+            $profile = TenantDB::table('student_profiles')->where('user_id', (int) $payment->student_id)->first();
+            $class = $payment->class_id ? TenantDB::table('classes')->where('id', (int) $payment->class_id)->first() : null;
 
             Mail::to((string) $school->contact_email)->send(new SchoolPaymentReceived($school, $payment, $student, $profile, $class));
 
-            DB::table('payments')->where('id', (int) $payment->id)->update([
+            TenantDB::table('payments')->where('id', (int) $payment->id)->update([
                 'school_notified_at' => now(),
                 'updated_at' => now(),
             ]);
@@ -64,39 +66,51 @@ class PaymentsController extends Controller
     public function feeSummary(Request $request)
     {
         $studentId = $request->user()->id;
-        $profile = DB::table('student_profiles')->where('user_id', $studentId)->first();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $studentId)->first();
         $classId = $profile?->current_class_id;
 
         if (! $classId) {
             return response()->json(['message' => 'Student class is not set.'], 400);
         }
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
-        $sessionId = $currentSession?->id;
+        $filter = $request->validate([
+            'academic_session_id' => ['nullable', 'integer'],
+            'term_id' => ['nullable', 'integer'],
+        ]);
+
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
+        $currentTerm = $currentSession
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            : null;
+
+        $sessionId = isset($filter['academic_session_id']) ? (int) $filter['academic_session_id'] : (int) ($currentSession?->id ?? 0);
+        $termId = isset($filter['term_id']) ? (int) $filter['term_id'] : (int) ($currentTerm?->id ?? 0);
 
         $school = app('tenant.school');
         $schoolId = (int) ($school?->id ?? 0);
-        $cacheKey = TenantCache::studentFeesKey($schoolId, (int) $studentId, (int) ($sessionId ?? 0));
+        // Include term in cache key to avoid mixing payments across terms.
+        $cacheKey = TenantCache::studentFeesKey($schoolId, (int) $studentId, (int) ($sessionId ?? 0)) . ':term=' . (int) ($termId ?? 0);
 
-        $payload = Cache::remember($cacheKey, 60, function () use ($classId, $currentSession, $sessionId, $studentId) {
-            $rulesQuery = DB::table('fee_rules')->where('class_id', $classId);
-            if ($sessionId) {
-                $rulesQuery->where(function ($w) use ($sessionId) {
-                    $w->whereNull('academic_session_id')->orWhere('academic_session_id', $sessionId);
-                });
-            }
+        $payload = Cache::remember($cacheKey, 60, function () use ($classId, $currentSession, $currentTerm, $sessionId, $termId, $studentId) {
+            $rulesQuery = TenantDB::table('fee_rules')->where('class_id', $classId);
+            // Fee rules may be global (null session) or session-scoped.
+            if ($sessionId) $rulesQuery->where(function ($w) use ($sessionId) {
+                $w->whereNull('academic_session_id')->orWhere('academic_session_id', $sessionId);
+            });
             $rules = $rulesQuery->orderBy('id')->get();
 
-            $paymentsQuery = DB::table('payments')
+            $paymentsQuery = TenantDB::table('payments')
                 ->where('student_id', $studentId)
                 ->where('status', 'success')
                 ->orderByDesc('paid_at')
                 ->limit(100);
 
+            // Payments must be EXACTLY scoped to the selected session/term to avoid mixing across terms.
             if ($sessionId && \Schema::hasColumn('payments', 'academic_session_id')) {
-                $paymentsQuery->where(function ($w) use ($sessionId) {
-                    $w->whereNull('academic_session_id')->orWhere('academic_session_id', $sessionId);
-                });
+                $paymentsQuery->where('academic_session_id', $sessionId);
+            }
+            if ($termId && \Schema::hasColumn('payments', 'term_id')) {
+                $paymentsQuery->where('term_id', $termId);
             }
 
             $payments = $paymentsQuery->get();
@@ -113,7 +127,7 @@ class PaymentsController extends Controller
                 ]);
             });
 
-            $settings = DB::table('payment_settings')->orderByDesc('id')->first();
+            $settings = TenantDB::table('payment_settings')->orderByDesc('id')->first();
             $paymentMode = $settings->mode ?? 'manual';
             // Only consider disabled if settings exist and are explicitly disabled
             $paymentEnabled = $settings ? (bool) ($settings->is_enabled ?? false) : true;
@@ -121,6 +135,11 @@ class PaymentsController extends Controller
             return [
                 'class_id' => $classId,
                 'current_session' => $currentSession,
+                'current_term' => $currentTerm,
+                'filters' => [
+                    'academic_session_id' => $sessionId ?: null,
+                    'term_id' => $termId ?: null,
+                ],
                 'payment_settings' => [
                     'mode' => $paymentMode,
                     'is_enabled' => $paymentEnabled,
@@ -142,8 +161,10 @@ class PaymentsController extends Controller
 
     public function initialize(Request $request, PaystackService $paystack)
     {
+        $tenantId = TenantContext::id();
+
         $student = $request->user();
-        $profile = DB::table('student_profiles')->where('user_id', $student->id)->first();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $student->id)->first();
         $classId = $profile?->current_class_id;
 
         $data = $request->validate([
@@ -156,7 +177,7 @@ class PaymentsController extends Controller
             return response()->json(['message' => 'Student class is not set.'], 400);
         }
 
-        $rule = DB::table('fee_rules')
+        $rule = TenantDB::table('fee_rules')
             ->where('id', (int) $data['fee_rule_id'])
             ->where('class_id', $classId)
             ->first();
@@ -171,7 +192,7 @@ class PaymentsController extends Controller
         }
 
         // Enforce remaining balance (no overpayment)
-        $alreadyPaid = (int) DB::table('payments')
+        $alreadyPaid = (int) TenantDB::table('payments')
             ->where('student_id', $student->id)
             ->where('fee_rule_id', (int) $rule->id)
             ->where('status', 'success')
@@ -187,7 +208,7 @@ class PaymentsController extends Controller
         $school = app('tenant.school');
         $reference = 'TR_'.Str::upper(Str::random(10)).'_'.time();
 
-        $settings = DB::table('payment_settings')->orderByDesc('id')->first();
+        $settings = TenantDB::table('payment_settings')->orderByDesc('id')->first();
         $mode = $settings->mode ?? 'manual';
         // Only check enabled if settings exist; if no settings, allow payments
         $enabled = $settings ? (bool) ($settings->is_enabled ?? false) : true;
@@ -213,8 +234,12 @@ class PaymentsController extends Controller
         }
 
         // automatic (paystack)
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
+        $currentTerm = $currentSession
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            : null;
         $sessionId = $currentSession?->id;
+        $termId = $currentTerm?->id;
 
         if (empty($settings?->paystack_subaccount_code)) {
             return response()->json(['message' => 'Paystack subaccount code is not configured for this school.'], 422);
@@ -238,6 +263,7 @@ class PaymentsController extends Controller
                 'student_id' => $student->id,
                 'class_id' => $classId,
                 'academic_session_id' => $sessionId,
+                'term_id' => $termId,
                 'fee_rule_id' => (int) $rule->id,
                 'label' => $rule->label,
                 'fee_amount_kobo' => (int) $amountKobo,
@@ -265,7 +291,7 @@ class PaymentsController extends Controller
 
     public function receipt(Request $request, int $id)
     {
-        $payment = DB::table('payments')->where('id', $id)->where('student_id', $request->user()->id)->first();
+        $payment = TenantDB::table('payments')->where('id', $id)->where('student_id', $request->user()->id)->first();
         if (! $payment) {
             return response()->json(['message' => 'Payment not found.'], 404);
         }
@@ -274,8 +300,8 @@ class PaymentsController extends Controller
         }
 
         $studentId = $request->user()->id;
-        $profile = DB::table('student_profiles')->where('user_id', $studentId)->first();
-        $class = $profile?->current_class_id ? DB::table('classes')->where('id', $profile->current_class_id)->first() : null;
+        $profile = TenantDB::table('student_profiles')->where('user_id', $studentId)->first();
+        $class = $profile?->current_class_id ? TenantDB::table('classes')->where('id', $profile->current_class_id)->first() : null;
         $school = app('tenant.school');
 
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf/receipt', [
@@ -291,12 +317,14 @@ class PaymentsController extends Controller
 
     public function confirm(Request $request, PaystackService $paystack)
     {
+        $tenantId = TenantContext::id();
+
         $student = $request->user();
         $data = $request->validate([
             'reference' => ['required', 'string', 'max:100'],
         ]);
 
-        $settings = DB::table('payment_settings')->orderByDesc('id')->first();
+        $settings = TenantDB::table('payment_settings')->orderByDesc('id')->first();
         if (! $settings || ($settings->mode ?? 'manual') !== 'automatic') {
             return response()->json(['message' => 'Automatic payments are not configured for this school.'], 422);
         }
@@ -314,7 +342,7 @@ class PaymentsController extends Controller
         }
 
         $reference = (string) ($verified['data']['reference'] ?? $data['reference']);
-        $exists = DB::table('payments')->where('reference', $reference)->exists();
+        $exists = TenantDB::table('payments')->where('reference', $reference)->exists();
         if (! $exists) {
             $totalPaidKobo = (int) ($verified['data']['amount'] ?? ($metadata['total_amount_kobo'] ?? 0));
             $feeAmountKobo = (int) ($metadata['fee_amount_kobo'] ?? ($metadata['amount_kobo'] ?? 0));
@@ -335,10 +363,12 @@ class PaymentsController extends Controller
             $paidAt = $verified['data']['paid_at'] ?? null;
 
             DB::table('payments')->insert([
+                'tenant_id' => $tenantId,
                 'student_id' => (int) $student->id,
                 'class_id' => isset($metadata['class_id']) ? (int) $metadata['class_id'] : null,
                 'fee_rule_id' => isset($metadata['fee_rule_id']) ? (int) $metadata['fee_rule_id'] : null,
                 'academic_session_id' => isset($metadata['academic_session_id']) ? (int) $metadata['academic_session_id'] : null,
+                'term_id' => isset($metadata['term_id']) ? (int) $metadata['term_id'] : null,
                 'amount_kobo' => $feeAmountKobo,
                 'service_fee_kobo' => $serviceFeeKobo ?: null,
                 'total_paid_kobo' => $totalPaidKobo ?: null,

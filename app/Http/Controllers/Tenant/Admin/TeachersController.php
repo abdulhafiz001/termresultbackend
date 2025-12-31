@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class TeachersController extends Controller
 {
@@ -18,8 +21,8 @@ class TeachersController extends Controller
             ->orderBy('name')
             ->get()
             ->map(function ($t) {
-                $classIds = DB::table('teacher_class')->where('teacher_id', $t->id)->pluck('class_id');
-                $subjectIds = DB::table('teacher_subject')->where('teacher_id', $t->id)->pluck('subject_id');
+                $classIds = TenantDB::table('teacher_class')->where('teacher_id', $t->id)->pluck('class_id');
+                $subjectIds = TenantDB::table('teacher_subject')->where('teacher_id', $t->id)->pluck('subject_id');
 
                 return [
                     'id' => $t->id,
@@ -38,10 +41,22 @@ class TeachersController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'username' => ['nullable', 'string', 'max:255', 'unique:users,username'],
-            'email' => ['nullable', 'email', 'max:255', 'unique:users,email'],
+            'username' => [
+                'nullable',
+                'string',
+                'max:255',
+                Rule::unique('users', 'username')->where('tenant_id', $tenantId),
+            ],
+            'email' => [
+                'nullable',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->where('tenant_id', $tenantId),
+            ],
             'phone' => ['nullable', 'string', 'max:40'],
             'password' => ['nullable', 'string', 'min:4', 'max:255'],
             'class_ids' => ['array'],
@@ -77,11 +92,23 @@ class TeachersController extends Controller
     public function update(Request $request, int $id)
     {
         $teacher = User::query()->where('role', 'teacher')->findOrFail($id);
+        $tenantId = TenantContext::id();
 
         $data = $request->validate([
             'name' => ['sometimes', 'required', 'string', 'max:255'],
-            'username' => ['sometimes', 'required', 'string', 'max:255', 'unique:users,username,'.$teacher->id],
-            'email' => ['nullable', 'email', 'max:255', 'unique:users,email,'.$teacher->id],
+            'username' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('users', 'username')->ignore($teacher->id)->where('tenant_id', $tenantId),
+            ],
+            'email' => [
+                'nullable',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->ignore($teacher->id)->where('tenant_id', $tenantId),
+            ],
             'phone' => ['nullable', 'string', 'max:40'],
             'status' => ['nullable', 'in:active,restricted,disabled'],
             'class_ids' => ['array'],
@@ -123,11 +150,14 @@ class TeachersController extends Controller
 
     private function syncTeacherAssignments(int $teacherId, array $classIds, array $subjectIds): void
     {
-        DB::table('teacher_class')->where('teacher_id', $teacherId)->delete();
-        DB::table('teacher_subject')->where('teacher_id', $teacherId)->delete();
+        $tenantId = TenantContext::id();
+
+        TenantDB::table('teacher_class')->where('teacher_id', $teacherId)->delete();
+        TenantDB::table('teacher_subject')->where('teacher_id', $teacherId)->delete();
 
         if (! empty($classIds)) {
             $rows = array_map(fn ($cid) => [
+                'tenant_id' => $tenantId,
                 'teacher_id' => $teacherId,
                 'class_id' => (int) $cid,
                 'created_at' => now(),
@@ -138,6 +168,7 @@ class TeachersController extends Controller
 
         if (! empty($subjectIds)) {
             $rows = array_map(fn ($sid) => [
+                'tenant_id' => $tenantId,
                 'teacher_id' => $teacherId,
                 'subject_id' => (int) $sid,
                 'created_at' => now(),

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -10,6 +12,8 @@ class AttendanceController extends Controller
 {
     public function index(Request $request)
     {
+        $tenantId = TenantContext::id();
+
         $classId = $request->query('class_id');
         $studentId = $request->query('student_id');
         $date = $request->query('date');
@@ -17,9 +21,9 @@ class AttendanceController extends Controller
         $termId = $request->query('term_id');
         $subjectId = $request->query('subject_id'); // optional (for subject attendance)
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         $sessionId = is_numeric($sessionId) ? (int) $sessionId : ($currentSession->id ?? null);
@@ -36,7 +40,7 @@ class AttendanceController extends Controller
         // Get weekly stats
         $weeklyStats = [];
         if ($sessionId && $termId) {
-            $weeklyStats = DB::table('attendance_sessions')
+            $weeklyStats = TenantDB::table('attendance_sessions')
                 ->where('academic_session_id', $sessionId)
                 ->where('term_id', $termId)
                 ->when($subjectId !== null, function ($q) use ($subjectId) {
@@ -55,7 +59,7 @@ class AttendanceController extends Controller
         $dailyAttendance = [];
         if ($date && $classId) {
             // Prefer class attendance (subject_id NULL) unless subject_id is explicitly provided.
-            $sessionQuery = DB::table('attendance_sessions')
+            $sessionQuery = TenantDB::table('attendance_sessions')
                 ->where('class_id', $classId)
                 ->where('academic_session_id', $sessionId)
                 ->where('term_id', $termId)
@@ -75,10 +79,23 @@ class AttendanceController extends Controller
                 $sessionIds = $sessions->pluck('id')->values()->all();
 
                 $dailyAttendance = DB::table('attendance_records')
-                    ->join('attendance_sessions', 'attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
-                    ->join('users', 'attendance_records.student_id', '=', 'users.id')
-                    ->leftJoin('student_profiles as sp', 'sp.user_id', '=', 'users.id')
-                    ->leftJoin('subjects', 'attendance_sessions.subject_id', '=', 'subjects.id')
+                    ->where('attendance_records.tenant_id', $tenantId)
+                    ->join('attendance_sessions', function ($j) {
+                        $j->on('attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                            ->on('attendance_sessions.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
+                    ->join('users', function ($j) {
+                        $j->on('attendance_records.student_id', '=', 'users.id')
+                            ->on('users.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
+                    ->leftJoin('student_profiles as sp', function ($j) {
+                        $j->on('sp.user_id', '=', 'users.id')
+                            ->on('sp.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
+                    ->leftJoin('subjects', function ($j) {
+                        $j->on('attendance_sessions.subject_id', '=', 'subjects.id')
+                            ->on('subjects.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
                     ->whereIn('attendance_records.attendance_session_id', $sessionIds)
                     ->select([
                         'attendance_records.id',
@@ -102,13 +119,13 @@ class AttendanceController extends Controller
         $studentStats = null;
         if ($studentId && $sessionId && $termId) {
             // Get student's class_id from their profile
-            $studentClassId = (int) (DB::table('student_profiles')->where('user_id', $studentId)->value('current_class_id') ?? 0);
+            $studentClassId = (int) (TenantDB::table('student_profiles')->where('user_id', $studentId)->value('current_class_id') ?? 0);
             
             // Use provided classId or student's class
             $filterClassId = $classId ? (int) $classId : $studentClassId;
             
             if ($filterClassId) {
-                $totalDays = DB::table('attendance_sessions')
+                $totalDays = TenantDB::table('attendance_sessions')
                     ->where('academic_session_id', $sessionId)
                     ->where('term_id', $termId)
                     ->whereNull('subject_id')
@@ -117,7 +134,11 @@ class AttendanceController extends Controller
                     ->count('date');
 
                 $presentDays = DB::table('attendance_records')
-                    ->join('attendance_sessions', 'attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                    ->where('attendance_records.tenant_id', $tenantId)
+                    ->join('attendance_sessions', function ($j) {
+                        $j->on('attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                            ->on('attendance_sessions.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
                     ->where('attendance_records.student_id', $studentId)
                     ->where('attendance_sessions.academic_session_id', $sessionId)
                     ->where('attendance_sessions.term_id', $termId)
@@ -127,7 +148,11 @@ class AttendanceController extends Controller
                     ->count();
 
                 $absentDays = DB::table('attendance_records')
-                    ->join('attendance_sessions', 'attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                    ->where('attendance_records.tenant_id', $tenantId)
+                    ->join('attendance_sessions', function ($j) {
+                        $j->on('attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                            ->on('attendance_sessions.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
                     ->where('attendance_records.student_id', $studentId)
                     ->where('attendance_sessions.academic_session_id', $sessionId)
                     ->where('attendance_sessions.term_id', $termId)
@@ -137,7 +162,11 @@ class AttendanceController extends Controller
                     ->count();
 
                 $lateDays = DB::table('attendance_records')
-                    ->join('attendance_sessions', 'attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                    ->where('attendance_records.tenant_id', $tenantId)
+                    ->join('attendance_sessions', function ($j) {
+                        $j->on('attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                            ->on('attendance_sessions.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
                     ->where('attendance_records.student_id', $studentId)
                     ->where('attendance_sessions.academic_session_id', $sessionId)
                     ->where('attendance_sessions.term_id', $termId)
@@ -147,7 +176,11 @@ class AttendanceController extends Controller
                     ->count();
 
                 $excusedDays = DB::table('attendance_records')
-                    ->join('attendance_sessions', 'attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                    ->where('attendance_records.tenant_id', $tenantId)
+                    ->join('attendance_sessions', function ($j) {
+                        $j->on('attendance_records.attendance_session_id', '=', 'attendance_sessions.id')
+                            ->on('attendance_sessions.tenant_id', '=', 'attendance_records.tenant_id');
+                    })
                     ->where('attendance_records.student_id', $studentId)
                     ->where('attendance_sessions.academic_session_id', $sessionId)
                     ->where('attendance_sessions.term_id', $termId)

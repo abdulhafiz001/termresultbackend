@@ -3,9 +3,12 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Validation\Rule;
 
 class TimetableController extends Controller
 {
@@ -18,12 +21,22 @@ class TimetableController extends Controller
 
     public function index(Request $request)
     {
+        $tenantId = TenantContext::id();
         $classId = $request->query('class_id');
         
-        $query = DB::table('timetables')
-            ->join('classes', 'timetables.class_id', '=', 'classes.id')
-            ->join('subjects', 'timetables.subject_id', '=', 'subjects.id')
-            ->join('users', 'timetables.teacher_id', '=', 'users.id')
+        $query = TenantDB::table('timetables')
+            ->join('classes', function ($j) {
+                $j->on('timetables.class_id', '=', 'classes.id')
+                    ->on('timetables.tenant_id', '=', 'classes.tenant_id');
+            })
+            ->join('subjects', function ($j) {
+                $j->on('timetables.subject_id', '=', 'subjects.id')
+                    ->on('timetables.tenant_id', '=', 'subjects.tenant_id');
+            })
+            ->join('users', function ($j) {
+                $j->on('timetables.teacher_id', '=', 'users.id')
+                    ->on('timetables.tenant_id', '=', 'users.tenant_id');
+            })
             ->select([
                 'timetables.id',
                 'timetables.class_id',
@@ -44,7 +57,7 @@ class TimetableController extends Controller
             ->orderBy('timetables.start_time');
 
         if ($classId) {
-            $query->where('timetables.class_id', $classId);
+            $query->where('timetables.class_id', (int) $classId);
         }
 
         $rows = $query->get()->map(function ($row) {
@@ -58,10 +71,11 @@ class TimetableController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
-            'class_id' => ['required', 'integer', 'exists:classes,id'],
-            'subject_id' => ['required', 'integer', 'exists:subjects,id'],
-            'teacher_id' => ['required', 'integer', 'exists:users,id'],
+            'class_id' => ['required', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'subject_id' => ['required', 'integer', Rule::exists('subjects', 'id')->where('tenant_id', $tenantId)],
+            'teacher_id' => ['required', 'integer', Rule::exists('users', 'id')->where('tenant_id', $tenantId)],
             'day_of_week' => ['required', 'string', 'in:Monday,Tuesday,Wednesday,Thursday,Friday'],
             // Accept HH:MM and HH:MM:SS (we normalize to HH:MM)
             'start_time' => ['required', 'string', 'regex:/^\\d{2}:\\d{2}(:\\d{2})?$/'],
@@ -69,7 +83,7 @@ class TimetableController extends Controller
             'venue' => ['nullable', 'string', 'max:255'],
             'is_combined' => ['boolean'],
             'combined_class_ids' => ['nullable', 'array'],
-            'combined_class_ids.*' => ['integer', 'exists:classes,id'],
+            'combined_class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'notes' => ['nullable', 'string'],
         ]);
 
@@ -83,7 +97,7 @@ class TimetableController extends Controller
 
         // Check for teacher clash (unless it's a combined class)
         if (!$data['is_combined']) {
-            $teacherClash = DB::table('timetables')
+            $teacherClash = TenantDB::table('timetables')
                 ->where('teacher_id', $data['teacher_id'])
                 ->where('day_of_week', $data['day_of_week'])
                 ->where(function ($query) use ($data) {
@@ -112,7 +126,7 @@ class TimetableController extends Controller
         }
 
         // Check for class clash (same class can't have multiple subjects at same time)
-        $classClash = DB::table('timetables')
+        $classClash = TenantDB::table('timetables')
             ->where('class_id', $data['class_id'])
             ->where('day_of_week', $data['day_of_week'])
             ->where(function ($query) use ($data) {
@@ -136,7 +150,7 @@ class TimetableController extends Controller
         }
 
         // Check if teacher is assigned to this subject
-        $teacherSubject = DB::table('teacher_subject')
+        $teacherSubject = TenantDB::table('teacher_subject')
             ->where('teacher_id', $data['teacher_id'])
             ->where('subject_id', $data['subject_id'])
             ->exists();
@@ -151,7 +165,7 @@ class TimetableController extends Controller
         $classIdsToCheck = array_merge([(int) $data['class_id']], (array) ($data['combined_class_ids'] ?? []));
         $missing = [];
         foreach (array_unique($classIdsToCheck) as $cid) {
-            $ok = DB::table('teacher_class')
+            $ok = TenantDB::table('teacher_class')
                 ->where('teacher_id', $data['teacher_id'])
                 ->where('class_id', (int) $cid)
                 ->exists();
@@ -164,6 +178,7 @@ class TimetableController extends Controller
         }
 
         $timetableId = DB::table('timetables')->insertGetId([
+            'tenant_id' => $tenantId,
             'class_id' => $data['class_id'],
             'subject_id' => $data['subject_id'],
             'teacher_id' => $data['teacher_id'],
@@ -183,22 +198,23 @@ class TimetableController extends Controller
 
     public function update(Request $request, int $id)
     {
-        $timetable = DB::table('timetables')->where('id', $id)->first();
+        $tenantId = TenantContext::id();
+        $timetable = TenantDB::table('timetables')->where('id', $id)->first();
         if (!$timetable) {
             return response()->json(['message' => 'Timetable not found.'], 404);
         }
 
         $data = $request->validate([
-            'class_id' => ['sometimes', 'required', 'integer', 'exists:classes,id'],
-            'subject_id' => ['sometimes', 'required', 'integer', 'exists:subjects,id'],
-            'teacher_id' => ['sometimes', 'required', 'integer', 'exists:users,id'],
+            'class_id' => ['sometimes', 'required', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'subject_id' => ['sometimes', 'required', 'integer', Rule::exists('subjects', 'id')->where('tenant_id', $tenantId)],
+            'teacher_id' => ['sometimes', 'required', 'integer', Rule::exists('users', 'id')->where('tenant_id', $tenantId)],
             'day_of_week' => ['sometimes', 'required', 'string', 'in:Monday,Tuesday,Wednesday,Thursday,Friday'],
             'start_time' => ['sometimes', 'required', 'string', 'regex:/^\\d{2}:\\d{2}(:\\d{2})?$/'],
             'end_time' => ['sometimes', 'required', 'string', 'regex:/^\\d{2}:\\d{2}(:\\d{2})?$/'],
             'venue' => ['nullable', 'string', 'max:255'],
             'is_combined' => ['boolean'],
             'combined_class_ids' => ['nullable', 'array'],
-            'combined_class_ids.*' => ['integer', 'exists:classes,id'],
+            'combined_class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'notes' => ['nullable', 'string'],
         ]);
 
@@ -223,7 +239,7 @@ class TimetableController extends Controller
 
         // Check for clashes (excluding current timetable)
         if (!$updateData['is_combined']) {
-            $teacherClash = DB::table('timetables')
+            $teacherClash = TenantDB::table('timetables')
                 ->where('teacher_id', $updateData['teacher_id'])
                 ->where('day_of_week', $updateData['day_of_week'])
                 ->where('id', '!=', $id)
@@ -249,7 +265,7 @@ class TimetableController extends Controller
             }
         }
 
-        $classClash = DB::table('timetables')
+        $classClash = TenantDB::table('timetables')
             ->where('class_id', $updateData['class_id'])
             ->where('day_of_week', $updateData['day_of_week'])
             ->where('id', '!=', $id)
@@ -273,7 +289,7 @@ class TimetableController extends Controller
             ]);
         }
 
-        DB::table('timetables')
+        TenantDB::table('timetables')
             ->where('id', $id)
             ->update([
                 'class_id' => $updateData['class_id'],
@@ -294,12 +310,13 @@ class TimetableController extends Controller
 
     public function destroy(int $id)
     {
-        $timetable = DB::table('timetables')->where('id', $id)->first();
+        TenantContext::id();
+        $timetable = TenantDB::table('timetables')->where('id', $id)->first();
         if (!$timetable) {
             return response()->json(['message' => 'Timetable not found.'], 404);
         }
 
-        DB::table('timetables')->where('id', $id)->delete();
+        TenantDB::table('timetables')->where('id', $id)->delete();
 
         return response()->json(['message' => 'Timetable deleted successfully.']);
     }

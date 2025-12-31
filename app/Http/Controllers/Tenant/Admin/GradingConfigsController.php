@@ -3,19 +3,27 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Validation\Rule;
 
 class GradingConfigsController extends Controller
 {
     public function index()
     {
-        $configs = DB::table('grading_configs')->orderByDesc('id')->get();
-        $ranges = DB::table('grading_config_ranges')->get()->groupBy('grading_config_id');
-        $classes = DB::table('grading_config_classes')
-            ->join('classes', 'classes.id', '=', 'grading_config_classes.class_id')
-            ->select(['grading_config_classes.grading_config_id', 'classes.id', 'classes.name'])
+        TenantContext::id();
+        $configs = TenantDB::table('grading_configs')->orderByDesc('id')->get();
+        $ranges = TenantDB::table('grading_config_ranges')->get()->groupBy('grading_config_id');
+        // Use an explicit alias so TenantDB's where(tenant_id=...) is qualified (avoids "tenant_id is ambiguous").
+        $classes = TenantDB::table('grading_config_classes as gcc', 'gcc.tenant_id')
+            ->join('classes', function ($j) {
+                $j->on('classes.id', '=', 'gcc.class_id')
+                    ->on('classes.tenant_id', '=', 'gcc.tenant_id');
+            })
+            ->select(['gcc.grading_config_id', 'classes.id', 'classes.name'])
             ->get()
             ->groupBy('grading_config_id');
 
@@ -41,12 +49,13 @@ class GradingConfigsController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'is_active' => ['nullable', 'boolean'],
             'class_ids' => ['required', 'array', 'min:1'],
-            'class_ids.*' => ['integer', 'exists:classes,id'],
+            'class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'ranges' => ['required', 'array', 'min:1'],
             'ranges.*.grade' => ['required', 'string', 'max:2'],
             'ranges.*.min_score' => ['required', 'integer', 'min:0', 'max:100'],
@@ -57,7 +66,9 @@ class GradingConfigsController extends Controller
         $this->validateRanges($ranges);
 
         return DB::transaction(function () use ($request, $data, $ranges) {
+            $tenantId = TenantContext::id();
             $id = DB::table('grading_configs')->insertGetId([
+                'tenant_id' => $tenantId,
                 'name' => $data['name'],
                 'description' => $data['description'] ?? null,
                 'is_active' => (bool) ($data['is_active'] ?? true),
@@ -68,6 +79,7 @@ class GradingConfigsController extends Controller
 
             foreach (array_values(array_unique($data['class_ids'])) as $classId) {
                 DB::table('grading_config_classes')->insert([
+                    'tenant_id' => $tenantId,
                     'grading_config_id' => $id,
                     'class_id' => (int) $classId,
                     'created_at' => now(),
@@ -77,6 +89,7 @@ class GradingConfigsController extends Controller
 
             foreach ($ranges as $r) {
                 DB::table('grading_config_ranges')->insert([
+                    'tenant_id' => $tenantId,
                     'grading_config_id' => $id,
                     'grade' => $r['grade'],
                     'min_score' => $r['min_score'],
@@ -92,12 +105,13 @@ class GradingConfigsController extends Controller
 
     public function update(Request $request, int $id)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'is_active' => ['nullable', 'boolean'],
             'class_ids' => ['required', 'array', 'min:1'],
-            'class_ids.*' => ['integer', 'exists:classes,id'],
+            'class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'ranges' => ['required', 'array', 'min:1'],
             'ranges.*.grade' => ['required', 'string', 'max:2'],
             'ranges.*.min_score' => ['required', 'integer', 'min:0', 'max:100'],
@@ -108,21 +122,23 @@ class GradingConfigsController extends Controller
         $this->validateRanges($ranges);
 
         return DB::transaction(function () use ($id, $data, $ranges) {
-            $exists = DB::table('grading_configs')->where('id', $id)->exists();
+            $tenantId = TenantContext::id();
+            $exists = TenantDB::table('grading_configs')->where('id', $id)->exists();
             if (! $exists) {
                 return response()->json(['message' => 'Grading config not found.'], 404);
             }
 
-            DB::table('grading_configs')->where('id', $id)->update([
+            TenantDB::table('grading_configs')->where('id', $id)->update([
                 'name' => $data['name'],
                 'description' => $data['description'] ?? null,
                 'is_active' => (bool) ($data['is_active'] ?? true),
                 'updated_at' => now(),
             ]);
 
-            DB::table('grading_config_classes')->where('grading_config_id', $id)->delete();
+            TenantDB::table('grading_config_classes')->where('grading_config_id', $id)->delete();
             foreach (array_values(array_unique($data['class_ids'])) as $classId) {
                 DB::table('grading_config_classes')->insert([
+                    'tenant_id' => $tenantId,
                     'grading_config_id' => $id,
                     'class_id' => (int) $classId,
                     'created_at' => now(),
@@ -130,9 +146,10 @@ class GradingConfigsController extends Controller
                 ]);
             }
 
-            DB::table('grading_config_ranges')->where('grading_config_id', $id)->delete();
+            TenantDB::table('grading_config_ranges')->where('grading_config_id', $id)->delete();
             foreach ($ranges as $r) {
                 DB::table('grading_config_ranges')->insert([
+                    'tenant_id' => $tenantId,
                     'grading_config_id' => $id,
                     'grade' => $r['grade'],
                     'min_score' => $r['min_score'],
@@ -148,7 +165,8 @@ class GradingConfigsController extends Controller
 
     public function destroy(int $id)
     {
-        $deleted = DB::table('grading_configs')->where('id', $id)->delete();
+        TenantContext::id();
+        $deleted = TenantDB::table('grading_configs')->where('id', $id)->delete();
         if (! $deleted) {
             return response()->json(['message' => 'Grading config not found.'], 404);
         }
@@ -159,8 +177,14 @@ class GradingConfigsController extends Controller
     {
         if ($total === null) return null;
 
+        $tenantId = TenantContext::id();
+
         $cfg = DB::table('grading_configs as gc')
-            ->join('grading_config_classes as gcc', 'gcc.grading_config_id', '=', 'gc.id')
+            ->where('gc.tenant_id', $tenantId)
+            ->join('grading_config_classes as gcc', function ($j) {
+                $j->on('gcc.grading_config_id', '=', 'gc.id')
+                    ->on('gcc.tenant_id', '=', 'gc.tenant_id');
+            })
             ->where('gc.is_active', true)
             ->where('gcc.class_id', $classId)
             ->orderByDesc('gc.id')
@@ -170,6 +194,7 @@ class GradingConfigsController extends Controller
         if (! $cfg) return null;
 
         $range = DB::table('grading_config_ranges')
+            ->where('tenant_id', $tenantId)
             ->where('grading_config_id', $cfg->id)
             ->where('min_score', '<=', $total)
             ->where('max_score', '>=', $total)

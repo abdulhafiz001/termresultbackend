@@ -7,14 +7,13 @@ use App\Mail\SchoolApproved;
 use App\Mail\SchoolDeclined;
 use App\Models\School;
 use App\Models\User;
-use App\Services\TenantDatabaseProvisioner;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Storage;
+use Stancl\Tenancy\Database\Models\Tenant;
 
 class SchoolsController extends Controller
 {
@@ -60,21 +59,12 @@ class SchoolsController extends Controller
 
         // Best-effort tenant stats.
         $stats = null;
-        if ($school->database_name && $school->status === 'active') {
+        if ($school->status === 'active') {
             try {
-                Config::set('database.connections.tenant.database', $school->database_name);
-                DB::purge('tenant');
-                $tenant = DB::connection('tenant');
-
-                $students = $tenant->getSchemaBuilder()->hasTable('users')
-                    ? (int) $tenant->table('users')->where('role', 'student')->count()
-                    : 0;
-                $teachers = $tenant->getSchemaBuilder()->hasTable('users')
-                    ? (int) $tenant->table('users')->where('role', 'teacher')->count()
-                    : 0;
-                $admins = $tenant->getSchemaBuilder()->hasTable('users')
-                    ? (int) $tenant->table('users')->where('role', 'school_admin')->count()
-                    : 0;
+                $tenantId = (string) $school->id;
+                $students = (int) DB::table('users')->where('tenant_id', $tenantId)->where('role', 'student')->count();
+                $teachers = (int) DB::table('users')->where('tenant_id', $tenantId)->where('role', 'teacher')->count();
+                $admins = (int) DB::table('users')->where('tenant_id', $tenantId)->where('role', 'school_admin')->count();
 
                 $stats = [
                     'students' => $students,
@@ -89,7 +79,23 @@ class SchoolsController extends Controller
         return response()->json(['data' => ['school' => $school, 'stats' => $stats]]);
     }
 
-    public function approve(Request $request, TenantDatabaseProvisioner $provisioner, int $id)
+    public function updateStorageQuota(Request $request, int $id)
+    {
+        $school = School::query()->find($id);
+        if (! $school) return response()->json(['message' => 'School not found.'], 404);
+
+        $data = $request->validate([
+            'storage_quota_mb' => ['required', 'integer', 'min:50', 'max:10240'], // 50MB - 10GB
+        ]);
+
+        $school->forceFill([
+            'storage_quota_mb' => (int) $data['storage_quota_mb'],
+        ])->save();
+
+        return response()->json(['message' => 'Storage quota updated.', 'data' => ['storage_quota_mb' => (int) $school->storage_quota_mb]]);
+    }
+
+    public function approve(Request $request, int $id)
     {
         $school = School::query()->find($id);
         if (! $school) return response()->json(['message' => 'School not found.'], 404);
@@ -97,36 +103,36 @@ class SchoolsController extends Controller
             return response()->json(['message' => 'School contact email is required to approve.'], 422);
         }
 
-        // If already active and healthy, block double-approval.
-        if ($school->status === 'active' && $this->tenantHealthy($school)) {
+        // If already active, allow re-sending admin credentials but don't flip status again.
+        if ($school->status === 'active') {
             return response()->json(['message' => 'School is already active.'], 422);
         }
         if (! in_array($school->status, ['pending', 'active'], true)) {
             return response()->json(['message' => "School is already {$school->status}."], 422);
         }
 
-        // Provision tenant DB + run migrations (idempotent).
-        try {
-            $provisioner->provision($school);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'message' => 'Failed to provision tenant database: '.$e->getMessage(),
-            ], 500);
-        }
+        // Single-database tenancy: ensure a tenant record exists for cache/redis isolation.
+        $tenantId = (string) $school->id;
+        Tenant::query()->firstOrCreate(
+            ['id' => $tenantId],
+            [
+                'data' => [
+                    'school_id' => $school->id,
+                    'subdomain' => $school->subdomain,
+                ],
+            ]
+        );
 
-        // Create or reset tenant admin user (in tenant DB) and always send a working password.
-        Config::set('database.connections.tenant.database', $school->database_name);
-        DB::purge('tenant');
-
+        // Create or reset tenant admin user (in central users table scoped by tenant_id).
         $passwordPlain = Str::random(10);
         $adminUsername = 'admin.'.$school->subdomain;
 
-        $originalConnection = DB::getDefaultConnection();
-        DB::setDefaultConnection('tenant');
+        tenancy()->initialize($tenantId);
         try {
             $admin = User::query()->where('username', $adminUsername)->first();
             if (! $admin) {
                 User::query()->create([
+                    'tenant_id' => $tenantId,
                     'name' => $school->name.' Admin',
                     'username' => $adminUsername,
                     'email' => $school->contact_email,
@@ -136,13 +142,16 @@ class SchoolsController extends Controller
                 ]);
             } else {
                 $admin->forceFill([
+                    'tenant_id' => $tenantId,
                     'email' => $school->contact_email,
                     'status' => 'active',
                     'password' => Hash::make($passwordPlain),
                 ])->save();
             }
         } finally {
-            DB::setDefaultConnection($originalConnection);
+            if (tenancy()->initialized) {
+                tenancy()->end();
+            }
         }
 
         // Only mark active after provisioning + admin creation succeeds.
@@ -169,7 +178,7 @@ class SchoolsController extends Controller
         // Send synchronously for platform approvals to reduce delivery delays.
         Mail::to($school->contact_email)->send($mailable);
 
-        return response()->json(['message' => 'School approved and provisioned.']);
+        return response()->json(['message' => 'School approved.']);
     }
 
     public function purge(Request $request, int $id)
@@ -181,45 +190,8 @@ class SchoolsController extends Controller
         $school = School::query()->find($id);
         if (! $school) return response()->json(['message' => 'School not found.'], 404);
 
-        $dbName = (string) ($school->database_name ?? '');
+        $tenantId = (string) $school->id;
         $subdomain = (string) ($school->subdomain ?? '');
-
-        // Best-effort: delete tenant files referenced in tenant DB before dropping it.
-        if ($dbName) {
-            try {
-                Config::set('database.connections.tenant.database', $dbName);
-                DB::purge('tenant');
-                $tenant = DB::connection('tenant');
-                $schema = $tenant->getSchemaBuilder();
-
-                $paths = collect();
-
-                if ($schema->hasTable('exam_question_submissions')) {
-                    $rows = $tenant->table('exam_question_submissions')->get(['paper_pdf_path', 'source_file_path']);
-                    foreach ($rows as $r) {
-                        if (!empty($r->paper_pdf_path)) $paths->push((string) $r->paper_pdf_path);
-                        if (!empty($r->source_file_path)) $paths->push((string) $r->source_file_path);
-                    }
-                }
-
-                if ($schema->hasTable('assignments')) {
-                    $rows = $tenant->table('assignments')->whereNotNull('image_path')->pluck('image_path');
-                    foreach ($rows as $p) $paths->push((string) $p);
-                }
-
-                if ($schema->hasTable('study_materials')) {
-                    $rows = $tenant->table('study_materials')->whereNotNull('file_path')->pluck('file_path');
-                    foreach ($rows as $p) $paths->push((string) $p);
-                }
-
-                $paths = $paths->filter()->unique()->values();
-                foreach ($paths as $p) {
-                    try { Storage::disk('public')->delete($p); } catch (\Throwable $e) {}
-                }
-            } catch (\Throwable $e) {
-                // ignore tenant file cleanup failures
-            }
-        }
 
         // Delete directories keyed by subdomain (logos + exams).
         if ($subdomain) {
@@ -227,34 +199,19 @@ class SchoolsController extends Controller
             try { Storage::disk('public')->deleteDirectory('exams/'.$subdomain); } catch (\Throwable $e) {}
         }
 
-        // Drop tenant DB and delete central record.
+        // Also delete tenant-partitioned directories (new single-db storage layout, best-effort).
+        try { Storage::disk('public')->deleteDirectory('tenants/'.$tenantId); } catch (\Throwable $e) {}
+
+        // Delete tenant + school. Tenant-owned data is cascaded via FK constraints on tenant_id.
         try {
-            if ($dbName) {
-                $adminConnection = env('TENANT_ADMIN_CONNECTION', config('database.default'));
-                DB::connection($adminConnection)->statement("DROP DATABASE IF EXISTS `{$dbName}`");
-            }
+            Tenant::query()->where('id', $tenantId)->delete();
         } catch (\Throwable $e) {
-            return response()->json(['message' => 'Failed to drop tenant database: '.$e->getMessage()], 500);
+            return response()->json(['message' => 'Failed to delete tenant data: '.$e->getMessage()], 500);
         }
 
-        // Delete school (cascades tokens/landing content; traffic nulls).
-        $school->delete();
+        $school->delete(); // central record
 
         return response()->json(['message' => 'School deleted permanently.']);
-    }
-
-    private function tenantHealthy(School $school): bool
-    {
-        if (! $school->database_name) return false;
-        try {
-            Config::set('database.connections.tenant.database', $school->database_name);
-            DB::purge('tenant');
-            $tenant = DB::connection('tenant');
-            $schema = $tenant->getSchemaBuilder();
-            return $schema->hasTable('users') && $schema->hasTable('announcements');
-        } catch (\Throwable $e) {
-            return false;
-        }
     }
 
     public function decline(Request $request, int $id)
@@ -330,16 +287,12 @@ class SchoolsController extends Controller
     {
         $school = School::query()->find($id);
         if (! $school) return response()->json(['message' => 'School not found.'], 404);
-        if ($school->status !== 'active' || ! $school->database_name) {
-            return response()->json(['message' => 'School must be active with a provisioned database.'], 422);
+        if ($school->status !== 'active') {
+            return response()->json(['message' => 'School must be active.'], 422);
         }
 
-        Config::set('database.connections.tenant.database', $school->database_name);
-        DB::purge('tenant');
-
-        $originalConnection = DB::getDefaultConnection();
-        DB::setDefaultConnection('tenant');
-
+        $tenantId = (string) $school->id;
+        tenancy()->initialize($tenantId);
         try {
             $admin = User::query()->where('role', 'school_admin')->orderBy('id')->first();
             if (! $admin) {
@@ -349,8 +302,6 @@ class SchoolsController extends Controller
             $newPassword = Str::random(10);
             $admin->forceFill(['password' => Hash::make($newPassword)])->save();
 
-            DB::setDefaultConnection($originalConnection);
-
             return response()->json([
                 'message' => 'Admin password reset successfully.',
                 'data' => [
@@ -359,8 +310,11 @@ class SchoolsController extends Controller
                 ],
             ]);
         } catch (\Throwable $e) {
-            DB::setDefaultConnection($originalConnection);
             return response()->json(['message' => 'Failed to reset password: '.$e->getMessage()], 500);
+        } finally {
+            if (tenancy()->initialized) {
+                tenancy()->end();
+            }
         }
     }
 
