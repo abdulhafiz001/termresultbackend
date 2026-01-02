@@ -99,7 +99,7 @@ class StudyMaterialsController extends Controller
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:10000'],
             // Allow common study material formats; keep size safe for shared hosting.
-            'file' => ['required', 'file', 'max:20480'], // 20MB
+            'file' => ['required', 'file', 'max:5120'], // 5MB
         ]);
 
         $teachesClass = TenantDB::table('teacher_class')

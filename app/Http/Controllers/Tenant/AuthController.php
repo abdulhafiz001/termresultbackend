@@ -9,6 +9,7 @@ use App\Support\TenantContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
@@ -36,27 +37,83 @@ class AuthController extends Controller
 
         $role = $request->input('role');
 
-        $query = User::query()->where('role', $role);
-
+        // Validate inputs first before rate limiting
         if ($role === 'student') {
             $admissionNumber = $request->input('admission_number');
             if (! $admissionNumber) {
                 return response()->json(['message' => 'admission_number is required for student login.'], 422);
             }
-            $query->where('admission_number', $admissionNumber);
         } else {
             $username = $request->input('username');
             if (! $username) {
                 return response()->json(['message' => 'username is required for this login.'], 422);
             }
-            $query->where('username', $username);
+        }
+
+        // Now that we have validated inputs, set up rate limiting
+        $ip = $request->ip() ?? 'unknown';
+        $identifier = $role === 'student' 
+            ? $admissionNumber
+            : $username;
+
+        // Rate limiting: 5 attempts per 5 minutes, then 5 minute block
+        $rateLimitKey = 'login:' . $ip . ':' . $identifier . ':' . $role;
+        $maxAttempts = 5;
+        $decayMinutes = 5; // Block for 5 minutes after max attempts
+
+        // Check if rate limit has expired (if availableIn returns 0 or negative, it's expired)
+        $availableIn = RateLimiter::availableIn($rateLimitKey);
+        if ($availableIn <= 0 && RateLimiter::attempts($rateLimitKey) > 0) {
+            // Rate limit has expired, clear it
+            RateLimiter::clear($rateLimitKey);
+        }
+
+        // Check rate limiting only if there are actual attempts
+        if (RateLimiter::attempts($rateLimitKey) >= $maxAttempts) {
+            $seconds = RateLimiter::availableIn($rateLimitKey);
+            if ($seconds > 0) {
+                $minutes = ceil($seconds / 60);
+                
+                return response()->json([
+                    'message' => 'Too many login attempts. Please try again in ' . $minutes . ' minute(s).',
+                    'blocked_until' => now()->addSeconds($seconds)->toIso8601String(),
+                    'seconds_remaining' => $seconds,
+                ], 429);
+            }
+        }
+
+        $query = User::query()->where('role', $role);
+
+        if ($role === 'student') {
+            $query->where('admission_number', $admissionNumber);
+        } else {
+            
+            // Support both formats: "username" and "username.schoolsubdomain"
+            // Try exact match first, then try with school subdomain appended
+            $query->where(function ($q) use ($username, $school) {
+                $q->where('username', $username);
+                
+                // If username doesn't contain a dot, also try with school subdomain
+                if (! str_contains($username, '.')) {
+                    $schoolSubdomain = $school && $school->subdomain ? $school->subdomain : '';
+                    if ($schoolSubdomain) {
+                        $q->orWhere('username', $username . '.' . $schoolSubdomain);
+                    }
+                }
+            });
         }
 
         $user = $query->first();
 
         if (! $user || ! Hash::check((string) $request->input('password'), $user->password)) {
+            // Increment rate limiter on failed attempt
+            RateLimiter::hit($rateLimitKey, $decayMinutes * 60);
+            
             return response()->json(['message' => 'Invalid credentials.'], 401);
         }
+
+        // Clear rate limiter on successful login
+        RateLimiter::clear($rateLimitKey);
 
         if ($user->status === 'disabled') {
             return response()->json([

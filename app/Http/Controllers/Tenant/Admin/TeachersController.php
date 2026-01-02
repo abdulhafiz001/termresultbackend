@@ -136,7 +136,15 @@ class TeachersController extends Controller
 
     private function generateUsernameFromName(string $name): string
     {
-        $base = Str::slug($name, '.');
+        $teacherSlug = Str::slug($name, '.');
+        $school = app()->bound('tenant.school') ? app('tenant.school') : null;
+        $schoolSlug = $school && $school->subdomain ? Str::slug($school->subdomain, '.') : 'school';
+
+        $base = trim($teacherSlug . '.' . $schoolSlug, '.');
+        if ($base === '') {
+            $base = 'teacher.' . $schoolSlug;
+        }
+
         $candidate = $base;
 
         $i = 1;

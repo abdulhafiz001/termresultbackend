@@ -156,7 +156,7 @@ Route::prefix('platform-admin')->group(function () {
 Route::prefix('tenant')->group(function () {
     // IdentifyTenant middleware is prepended globally to the API group in bootstrap/app.php.
     Route::post('/auth/login', [TenantAuthController::class, 'login'])
-        ->middleware('throttle:60,1');
+        ->middleware('throttle:5,1');
     Route::post('/auth/verify-admission', [TenantAuthController::class, 'verifyAdmissionNumber'])
         ->middleware('throttle:10,1');
     Route::post('/auth/forgot-password', [TenantAuthController::class, 'forgotPassword'])

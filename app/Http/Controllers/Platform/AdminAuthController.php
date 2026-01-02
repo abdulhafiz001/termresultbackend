@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\PlatformAdmin;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 
 class AdminAuthController extends Controller
@@ -76,6 +77,33 @@ class AdminAuthController extends Controller
         ]);
 
         $login = strtolower(trim((string) $data['login']));
+        $ip = $request->ip() ?? 'unknown';
+
+        // Rate limiting: 5 attempts per 5 minutes, then 5 minute block
+        $rateLimitKey = 'platform-admin-login:' . $ip . ':' . $login;
+        $maxAttempts = 5;
+        $decayMinutes = 5;
+
+        // Check if rate limit has expired (if availableIn returns 0 or negative, it's expired)
+        $availableIn = RateLimiter::availableIn($rateLimitKey);
+        if ($availableIn <= 0 && RateLimiter::attempts($rateLimitKey) > 0) {
+            // Rate limit has expired, clear it
+            RateLimiter::clear($rateLimitKey);
+        }
+
+        // Check rate limiting only if there are actual attempts
+        if (RateLimiter::attempts($rateLimitKey) >= $maxAttempts) {
+            $seconds = RateLimiter::availableIn($rateLimitKey);
+            if ($seconds > 0) {
+                $minutes = ceil($seconds / 60);
+                
+                return response()->json([
+                    'message' => 'Too many login attempts. Please try again in ' . $minutes . ' minute(s).',
+                    'blocked_until' => now()->addSeconds($seconds)->toIso8601String(),
+                    'seconds_remaining' => $seconds,
+                ], 429);
+            }
+        }
 
         /** @var PlatformAdmin|null $admin */
         $admin = PlatformAdmin::query()
@@ -84,8 +112,13 @@ class AdminAuthController extends Controller
             ->first();
 
         if (! $admin || ! Hash::check((string) $data['password'], (string) $admin->password)) {
+            // Increment rate limiter on failed attempt
+            RateLimiter::hit($rateLimitKey, $decayMinutes * 60);
             return response()->json(['message' => 'Invalid credentials.'], 422);
         }
+
+        // Clear rate limiter on successful login
+        RateLimiter::clear($rateLimitKey);
         if (! ($admin->is_active ?? false)) {
             return response()->json(['message' => 'Account disabled.'], 403);
         }
