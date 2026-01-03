@@ -3,7 +3,7 @@
 namespace App\Exports;
 
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
+use App\Support\TenantDB;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 
@@ -29,7 +29,7 @@ class StudentsExport implements FromCollection, WithHeadings
 
     public function collection(): Collection
     {
-        $q = DB::table('users')
+        $q = TenantDB::table('users')
             ->join('student_profiles', 'student_profiles.user_id', '=', 'users.id')
             ->leftJoin('classes', 'classes.id', '=', 'student_profiles.current_class_id')
             ->where('users.role', 'student')

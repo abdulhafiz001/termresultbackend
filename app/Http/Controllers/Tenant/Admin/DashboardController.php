@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantDB;
 use Illuminate\Support\Facades\DB;
 
 class DashboardController extends Controller
@@ -17,19 +18,19 @@ class DashboardController extends Controller
 
         // Get counts
         // NOTE: In tenant DB, students/teachers are stored in `users` with roles, plus `student_profiles`.
-        $totalStudents = DB::table('users')->where('role', 'student')->count();
-        $totalTeachers = DB::table('users')->where('role', 'teacher')->count();
-        $totalClasses = DB::table('classes')->count();
-        $totalSubjects = DB::table('subjects')->count();
+        $totalStudents = TenantDB::table('users')->where('role', 'student')->count();
+        $totalTeachers = TenantDB::table('users')->where('role', 'teacher')->count();
+        $totalClasses = TenantDB::table('classes')->count();
+        $totalSubjects = TenantDB::table('subjects')->count();
 
         // Get current session/term
-        $currentSession = DB::table('academic_sessions')
+        $currentSession = TenantDB::table('academic_sessions')
             ->where('is_current', true)
             ->first();
 
         $currentTerm = null;
         if ($currentSession) {
-            $currentTerm = DB::table('terms')
+            $currentTerm = TenantDB::table('terms')
                 ->where('academic_session_id', $currentSession->id)
                 ->where('is_current', true)
                 ->first();

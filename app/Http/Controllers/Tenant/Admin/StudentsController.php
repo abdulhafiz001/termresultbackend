@@ -18,7 +18,11 @@ class StudentsController extends Controller
 {
     public function show(int $id)
     {
-        $user = User::query()->where('role', 'student')->findOrFail($id);
+        $tenantId = TenantContext::id();
+        $user = User::query()
+            ->where('tenant_id', $tenantId)
+            ->where('role', 'student')
+            ->findOrFail($id);
         $profile = TenantDB::table('student_profiles')->where('user_id', $user->id)->first();
         $class = $profile?->current_class_id
             ? TenantDB::table('classes')->where('id', (int) $profile->current_class_id)->first()
@@ -82,6 +86,11 @@ class StudentsController extends Controller
         $classId = (int) $data['class_id'];
         $file = $request->file('file');
 
+        // Ensure class belongs to this tenant.
+        if (! TenantDB::table('classes')->where('id', $classId)->exists()) {
+            return response()->json(['message' => 'Invalid class for this school.'], 422);
+        }
+
         $subjectIds = [];
         if (!empty($data['subject_ids'])) {
             $decoded = json_decode($data['subject_ids'], true);
@@ -130,7 +139,7 @@ class StudentsController extends Controller
             }
 
             // Enforce unique admission number.
-            if (User::query()->where('admission_number', $admission)->exists()) {
+            if (User::query()->where('tenant_id', $tenantId)->where('admission_number', $admission)->exists()) {
                 $skipped++;
                 $errors[] = "Row {$rowNum}: admission_number '{$admission}' already exists.";
                 continue;
@@ -140,6 +149,7 @@ class StudentsController extends Controller
                 $tenantId, $first, $last, $middle, $admission, $email, $phone, $dob, $gender, $address, $classId, $subjectIds, &$created
             ) {
                 $user = User::create([
+                    'tenant_id' => $tenantId,
                     'name' => trim($first.' '.$last),
                     'admission_number' => $admission,
                     'role' => 'student',
@@ -259,6 +269,7 @@ class StudentsController extends Controller
         $password = $data['password'] ?? 'password';
 
         $user = User::create([
+            'tenant_id' => $tenantId,
             'name' => trim($data['first_name'].' '.$data['last_name']),
             'admission_number' => $data['admission_number'],
             'role' => 'student',
@@ -299,8 +310,11 @@ class StudentsController extends Controller
 
     public function update(Request $request, int $id)
     {
-        $user = User::query()->where('role', 'student')->findOrFail($id);
         $tenantId = TenantContext::id();
+        $user = User::query()
+            ->where('tenant_id', $tenantId)
+            ->where('role', 'student')
+            ->findOrFail($id);
 
         $data = $request->validate([
             'first_name' => ['sometimes', 'required', 'string', 'max:255'],
@@ -381,7 +395,11 @@ class StudentsController extends Controller
 
     public function destroy(int $id)
     {
-        $user = User::query()->where('role', 'student')->findOrFail($id);
+        $tenantId = TenantContext::id();
+        $user = User::query()
+            ->where('tenant_id', $tenantId)
+            ->where('role', 'student')
+            ->findOrFail($id);
         $user->update(['status' => 'disabled']);
 
         return response()->json(['message' => 'Student disabled (soft delete).']);

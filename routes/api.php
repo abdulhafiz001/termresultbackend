@@ -156,7 +156,7 @@ Route::prefix('platform-admin')->group(function () {
 Route::prefix('tenant')->group(function () {
     // IdentifyTenant middleware is prepended globally to the API group in bootstrap/app.php.
     Route::post('/auth/login', [TenantAuthController::class, 'login'])
-        ->middleware('throttle:5,1');
+        ->middleware('throttle:tenant-login');
     Route::post('/auth/verify-admission', [TenantAuthController::class, 'verifyAdmissionNumber'])
         ->middleware('throttle:10,1');
     Route::post('/auth/forgot-password', [TenantAuthController::class, 'forgotPassword'])
@@ -195,11 +195,13 @@ Route::prefix('tenant')->group(function () {
 
             Route::get('/classes', [ClassesController::class, 'index']);
             Route::post('/classes', [ClassesController::class, 'store']);
+            Route::post('/classes/import', [ClassesController::class, 'import']);
             Route::put('/classes/{id}', [ClassesController::class, 'update']);
             Route::delete('/classes/{id}', [ClassesController::class, 'destroy']);
 
             Route::get('/subjects', [SubjectsController::class, 'index']);
             Route::post('/subjects', [SubjectsController::class, 'store']);
+            Route::post('/subjects/import', [SubjectsController::class, 'import']);
             Route::put('/subjects/{id}', [SubjectsController::class, 'update']);
             Route::delete('/subjects/{id}', [SubjectsController::class, 'destroy']);
 

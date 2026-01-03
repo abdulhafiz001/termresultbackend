@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Tenant\Teacher;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantDB;
 use Illuminate\Support\Facades\DB;
 
 class DashboardController extends Controller
@@ -18,14 +19,14 @@ class DashboardController extends Controller
         }
 
         // Get assigned classes
-        $assignedClasses = DB::table('teacher_class')
+        $assignedClasses = TenantDB::table('teacher_class')
             ->join('classes', 'teacher_class.class_id', '=', 'classes.id')
             ->where('teacher_class.teacher_id', $user->id)
             ->select('classes.*')
             ->get();
 
         // Get assigned subjects
-        $assignedSubjects = DB::table('teacher_subject')
+        $assignedSubjects = TenantDB::table('teacher_subject')
             ->join('subjects', 'teacher_subject.subject_id', '=', 'subjects.id')
             ->where('teacher_subject.teacher_id', $user->id)
             ->select('subjects.*')
@@ -35,7 +36,7 @@ class DashboardController extends Controller
         $totalStudents = 0;
         $classIds = $assignedClasses->pluck('id')->toArray();
         if (count($classIds) > 0) {
-            $totalStudents = DB::table('student_profiles')
+            $totalStudents = TenantDB::table('student_profiles')
                 ->join('users', 'users.id', '=', 'student_profiles.user_id')
                 ->where('users.role', 'student')
                 ->whereIn('student_profiles.current_class_id', $classIds)
@@ -43,13 +44,13 @@ class DashboardController extends Controller
         }
 
         // Get current session and term
-        $currentSession = DB::table('academic_sessions')
+        $currentSession = TenantDB::table('academic_sessions')
             ->where('is_current', true)
             ->first();
 
         $currentTerm = null;
         if ($currentSession) {
-            $currentTerm = DB::table('terms')
+            $currentTerm = TenantDB::table('terms')
                 ->where('academic_session_id', $currentSession->id)
                 ->where('is_current', true)
                 ->first();
@@ -60,7 +61,7 @@ class DashboardController extends Controller
         // This would require more complex logic to calculate
 
         // Get form class if teacher is form teacher
-        $formClass = DB::table('classes')
+        $formClass = TenantDB::table('classes')
             ->where('form_teacher_id', $user->id)
             ->first();
 
@@ -95,7 +96,7 @@ class DashboardController extends Controller
                     'pending_scores' => $pendingScores,
                 ],
                 'assigned_classes' => $assignedClasses->map(function ($class) {
-                    $studentCount = DB::table('student_profiles')
+                    $studentCount = TenantDB::table('student_profiles')
                         ->join('users', 'users.id', '=', 'student_profiles.user_id')
                         ->where('users.role', 'student')
                         ->where('student_profiles.current_class_id', $class->id)

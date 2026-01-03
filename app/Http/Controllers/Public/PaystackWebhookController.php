@@ -106,6 +106,43 @@ class PaystackWebhookController extends Controller
                 // Only record successful payments (no pending/failed records).
                 $exists = DB::table('payments')->where('tenant_id', $tenantId)->where('reference', $reference)->exists();
                 if (! $exists) {
+                    // Validate that referenced entities belong to this tenant to prevent cross-school leakage.
+                    $studentId = (int) ($metadata['student_id'] ?? 0);
+                    if ($studentId <= 0) {
+                        return response()->json(['message' => 'Invalid student metadata.'], 422);
+                    }
+                    $studentOk = DB::table('users')
+                        ->where('tenant_id', $tenantId)
+                        ->where('id', $studentId)
+                        ->where('role', 'student')
+                        ->exists();
+                    if (! $studentOk) {
+                        return response()->json(['message' => 'Student does not belong to this tenant.'], 422);
+                    }
+
+                    $classId = isset($metadata['class_id']) ? (int) $metadata['class_id'] : 0;
+                    if ($classId > 0) {
+                        $classOk = DB::table('classes')->where('tenant_id', $tenantId)->where('id', $classId)->exists();
+                        if (! $classOk) {
+                            return response()->json(['message' => 'Class does not belong to this tenant.'], 422);
+                        }
+                    } else {
+                        $classId = null;
+                    }
+
+                    $feeRuleId = isset($metadata['fee_rule_id']) ? (int) $metadata['fee_rule_id'] : 0;
+                    if ($feeRuleId > 0) {
+                        $fr = DB::table('fee_rules')->where('tenant_id', $tenantId)->where('id', $feeRuleId)->first();
+                        if (! $fr) {
+                            return response()->json(['message' => 'Fee rule does not belong to this tenant.'], 422);
+                        }
+                        if ($classId !== null && (int) ($fr->class_id ?? 0) !== (int) $classId) {
+                            return response()->json(['message' => 'Fee rule does not match class.'], 422);
+                        }
+                    } else {
+                        $feeRuleId = null;
+                    }
+
                     $totalPaidKobo = (int) ($verified['data']['amount'] ?? ($metadata['total_amount_kobo'] ?? 0));
                     $feeAmountKobo = (int) ($metadata['fee_amount_kobo'] ?? ($metadata['amount_kobo'] ?? 0));
                     $serviceFeeKobo = (int) ($metadata['service_fee_kobo'] ?? 0);
@@ -114,9 +151,9 @@ class PaystackWebhookController extends Controller
 
                     DB::table('payments')->insert([
                         'tenant_id' => $tenantId,
-                        'student_id' => (int) ($metadata['student_id'] ?? 0),
-                        'class_id' => isset($metadata['class_id']) ? (int) $metadata['class_id'] : null,
-                        'fee_rule_id' => isset($metadata['fee_rule_id']) ? (int) $metadata['fee_rule_id'] : null,
+                        'student_id' => $studentId,
+                        'class_id' => $classId,
+                        'fee_rule_id' => $feeRuleId,
                         'academic_session_id' => isset($metadata['academic_session_id']) ? (int) $metadata['academic_session_id'] : null,
                         'term_id' => isset($metadata['term_id']) ? (int) $metadata['term_id'] : null,
                         'amount_kobo' => $feeAmountKobo,
@@ -138,7 +175,6 @@ class PaystackWebhookController extends Controller
                 }
 
                 // Bust student fee cache for current session (if present)
-                $studentId = (int) ($metadata['student_id'] ?? 0);
                 $sessionId = (int) ($metadata['academic_session_id'] ?? 0);
                 if ($studentId && $sessionId) {
                     TenantCache::forgetStudentFees($school, $studentId, $sessionId);

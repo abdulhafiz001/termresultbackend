@@ -4,8 +4,8 @@ namespace App\Http\Controllers\Tenant\Teacher;
 
 use App\Http\Controllers\Controller;
 use App\Support\TenantCache;
+use App\Support\TenantDB;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 
 class AcademicController extends Controller
 {
@@ -15,12 +15,12 @@ class AcademicController extends Controller
         $cacheKey = TenantCache::academicSessionsKey((int) $school->id);
 
         $sessions = Cache::remember($cacheKey, now()->addMinutes(30), function () {
-            return DB::table('academic_sessions')
+            return TenantDB::table('academic_sessions')
                 ->orderByDesc('is_current')
                 ->orderByDesc('id')
                 ->get()
                 ->map(function ($s) {
-                    $terms = DB::table('terms')
+                    $terms = TenantDB::table('terms')
                         ->where('academic_session_id', $s->id)
                         ->orderByDesc('is_current')
                         ->orderBy('id')

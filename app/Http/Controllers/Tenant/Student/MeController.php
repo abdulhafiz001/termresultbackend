@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Tenant\Student;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -15,13 +16,13 @@ class MeController extends Controller
     {
         $user = $request->user();
 
-        $profile = DB::table('student_profiles')->where('user_id', $user->id)->first();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $user->id)->first();
         $class = $profile?->current_class_id 
-            ? DB::table('classes')->where('id', $profile->current_class_id)->first() 
+            ? TenantDB::table('classes')->where('id', $profile->current_class_id)->first()
             : null;
 
         // Get current academic session
-        $currentSession = DB::table('academic_sessions')
+        $currentSession = TenantDB::table('academic_sessions')
             ->where('is_current', true)
             ->first();
 
@@ -29,7 +30,7 @@ class MeController extends Controller
         $subjects = collect();
         $offeredSubjectsCount = 0;
         if (Schema::hasTable('student_subject')) {
-            $subjects = DB::table('student_subject')
+            $subjects = TenantDB::table('student_subject')
                 ->join('subjects', 'student_subject.subject_id', '=', 'subjects.id')
                 ->where('student_subject.student_id', $user->id)
                 ->select('subjects.id', 'subjects.name', 'subjects.code')
@@ -40,7 +41,7 @@ class MeController extends Controller
         if ($subjects->count() > 0) {
             $offeredSubjectsCount = $subjects->count();
         } elseif ($class && Schema::hasTable('class_subject')) {
-            $subjects = DB::table('class_subject')
+            $subjects = TenantDB::table('class_subject')
                 ->join('subjects', 'class_subject.subject_id', '=', 'subjects.id')
                 ->where('class_subject.class_id', $class->id)
                 ->select('subjects.id', 'subjects.name', 'subjects.code')
@@ -52,7 +53,7 @@ class MeController extends Controller
         // Teachers assigned to the student's class
         $teachersForClass = [];
         if ($class) {
-            $teachersForClass = DB::table('teacher_class')
+            $teachersForClass = TenantDB::table('teacher_class')
                 ->join('users', 'users.id', '=', 'teacher_class.teacher_id')
                 ->where('teacher_class.class_id', $class->id)
                 ->where('users.role', 'teacher')
@@ -65,18 +66,18 @@ class MeController extends Controller
         // Get academic history (term averages per session)
         $academicHistory = [];
         if ($profile) {
-            $sessions = DB::table('academic_sessions')
+            $sessions = TenantDB::table('academic_sessions')
                 ->orderBy('start_date', 'desc')
                 ->limit(5)
                 ->get();
 
             foreach ($sessions as $session) {
-                $terms = DB::table('terms')
+                $terms = TenantDB::table('terms')
                     ->where('academic_session_id', $session->id)
                     ->get();
 
                 foreach ($terms as $term) {
-                    $scores = DB::table('student_scores')
+                    $scores = TenantDB::table('student_scores')
                         ->where('student_id', $user->id)
                         ->where('academic_session_id', $session->id)
                         ->where('term_id', $term->id)
@@ -89,7 +90,7 @@ class MeController extends Controller
                         $position = null;
                         if ($profile->current_class_id) {
                             // Calculate position based on class average
-                            $classAverages = DB::table('student_scores')
+                            $classAverages = TenantDB::table('student_scores')
                                 ->join('student_profiles', 'student_scores.student_id', '=', 'student_profiles.user_id')
                                 ->where('student_profiles.current_class_id', $profile->current_class_id)
                                 ->where('student_scores.academic_session_id', $session->id)
@@ -151,7 +152,7 @@ class MeController extends Controller
             'emergency_phone' => 'nullable|string|max:20',
         ]);
 
-        DB::table('student_profiles')
+        TenantDB::table('student_profiles')
             ->where('user_id', $user->id)
             ->update([
                 'phone' => $validated['phone'] ?? null,

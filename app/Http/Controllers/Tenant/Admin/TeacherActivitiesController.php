@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -10,6 +12,7 @@ class TeacherActivitiesController extends Controller
 {
     public function index(Request $request)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
             'teacher_id' => ['nullable', 'integer'],
             'action' => ['nullable', 'string', 'max:255'],
@@ -18,9 +21,13 @@ class TeacherActivitiesController extends Controller
             'limit' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
 
-        $q = DB::table('teacher_activities as ta')
-            ->join('users as u', 'u.id', '=', 'ta.teacher_id')
-            ->where('u.role', 'teacher');
+        $q = TenantDB::table('teacher_activities as ta', 'ta.tenant_id')
+            ->join('users as u', function ($j) {
+                $j->on('u.id', '=', 'ta.teacher_id')
+                    ->on('u.tenant_id', '=', 'ta.tenant_id');
+            })
+            ->where('u.role', 'teacher')
+            ->where('ta.tenant_id', $tenantId);
 
         if (! empty($data['teacher_id'])) $q->where('ta.teacher_id', (int) $data['teacher_id']);
         if (! empty($data['action'])) $q->where('ta.action', $data['action']);
@@ -59,10 +66,10 @@ class TeacherActivitiesController extends Controller
             });
 
         $stats = [
-            'total' => DB::table('teacher_activities')->count(),
-            'logins' => DB::table('teacher_activities')->where('action', 'teacher_login')->count(),
-            'score_saves' => DB::table('teacher_activities')->where('action', 'score_saved')->count(),
-            'attendance_saves' => DB::table('teacher_activities')->where('action', 'attendance_saved')->count(),
+            'total' => (int) TenantDB::table('teacher_activities')->count(),
+            'logins' => (int) TenantDB::table('teacher_activities')->where('action', 'teacher_login')->count(),
+            'score_entries' => (int) TenantDB::table('teacher_activities')->where('action', 'score_saved')->count(),
+            'attendance' => (int) TenantDB::table('teacher_activities')->where('action', 'attendance_saved')->count(),
         ];
 
         return response()->json(['data' => $items, 'stats' => $stats]);

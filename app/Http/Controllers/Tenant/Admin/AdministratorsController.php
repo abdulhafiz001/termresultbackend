@@ -3,15 +3,17 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Support\TenantContext;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 
 class AdministratorsController extends Controller
 {
     public function index()
     {
-        $admins = DB::table('users')
+        $admins = TenantDB::table('users')
             ->where('role', 'school_admin')
             ->orderByDesc('id')
             ->get()
@@ -38,14 +40,26 @@ class AdministratorsController extends Controller
 
     public function store(Request $request)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'username' => ['required', 'string', 'max:255', 'unique:users,username'],
-            'email' => ['nullable', 'email', 'max:255', 'unique:users,email'],
+            'username' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('users', 'username')->where('tenant_id', $tenantId),
+            ],
+            'email' => [
+                'nullable',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->where('tenant_id', $tenantId),
+            ],
             'password' => ['required', 'string', 'min:6'],
         ]);
 
-        $id = DB::table('users')->insertGetId([
+        $id = TenantDB::table('users')->insertGetId([
+            'tenant_id' => $tenantId,
             'name' => $data['name'],
             'username' => $data['username'],
             'email' => $data['email'] ?? null,
@@ -61,15 +75,26 @@ class AdministratorsController extends Controller
 
     public function update(Request $request, int $id)
     {
+        $tenantId = TenantContext::id();
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'username' => ['required', 'string', 'max:255', "unique:users,username,{$id}"],
-            'email' => ['nullable', 'email', 'max:255', "unique:users,email,{$id}"],
+            'username' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('users', 'username')->ignore($id)->where('tenant_id', $tenantId),
+            ],
+            'email' => [
+                'nullable',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->ignore($id)->where('tenant_id', $tenantId),
+            ],
             'status' => ['required', 'in:active,disabled,restricted'],
             'password' => ['nullable', 'string', 'min:6'],
         ]);
 
-        $admin = DB::table('users')->where('id', $id)->where('role', 'school_admin')->first();
+        $admin = TenantDB::table('users')->where('id', $id)->where('role', 'school_admin')->first();
         if (! $admin) {
             return response()->json(['message' => 'Administrator not found.'], 404);
         }
@@ -85,14 +110,14 @@ class AdministratorsController extends Controller
             $update['password'] = Hash::make($data['password']);
         }
 
-        DB::table('users')->where('id', $id)->update($update);
+        TenantDB::table('users')->where('id', $id)->update($update);
 
         return response()->json(['message' => 'Administrator updated.']);
     }
 
     public function destroy(int $id)
     {
-        $admin = DB::table('users')->where('id', $id)->where('role', 'school_admin')->first();
+        $admin = TenantDB::table('users')->where('id', $id)->where('role', 'school_admin')->first();
         if (! $admin) {
             return response()->json(['message' => 'Administrator not found.'], 404);
         }
@@ -102,7 +127,7 @@ class AdministratorsController extends Controller
             return response()->json(['message' => 'You cannot delete your own account.'], 403);
         }
 
-        DB::table('users')->where('id', $id)->delete();
+        TenantDB::table('users')->where('id', $id)->delete();
 
         return response()->json(['message' => 'Administrator deleted.']);
     }

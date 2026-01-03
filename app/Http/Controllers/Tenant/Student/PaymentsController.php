@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class PaymentsController extends Controller
 {
@@ -168,7 +169,7 @@ class PaymentsController extends Controller
         $classId = $profile?->current_class_id;
 
         $data = $request->validate([
-            'fee_rule_id' => ['required', 'integer', 'exists:fee_rules,id'],
+            'fee_rule_id' => ['required', 'integer', Rule::exists('fee_rules', 'id')->where('tenant_id', $tenantId)],
             'amount_naira' => ['required', 'numeric', 'min:1'],
             'callback_url' => ['nullable', 'string', 'max:500'],
         ]);

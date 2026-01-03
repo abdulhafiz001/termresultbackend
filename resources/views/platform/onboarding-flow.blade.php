@@ -3,262 +3,410 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TermResult - School Onboarding Flow</title>
+  <title>TermResult - Modern Onboarding</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    @page { margin: 16mm; size: A4; }
-    * { box-sizing: border-box; }
-    body {
-      font-family: DejaVu Sans, sans-serif;
-      color: #0f172a;
-      font-size: 11px;
-      line-height: 1.45;
+    :root {
+      --primary: #4f46e5;
+      --primary-light: #e0e7ff;
+      --slate-900: #0f172a;
+      --slate-800: #1e293b;
+      --slate-600: #475569;
+      --slate-400: #94a3b8;
+      --slate-50: #f8fafc;
+      --white: #ffffff;
+      --accent-cyan: #06b6d4;
+      --accent-green: #10b981;
+      --accent-purple: #8b5cf6;
     }
-    .topbar {
-      padding: 14px 16px;
-      border-radius: 10px;
-      background: #0b1220;
-      color: #fff;
-    }
-    .brand {
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: 0.5px;
-    }
-    .brand small {
-      display: block;
-      font-size: 10px;
-      font-weight: 600;
-      color: #c7d2fe;
-      margin-top: 2px;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-    }
-    .meta {
-      margin-top: 8px;
-      font-size: 9px;
-      color: #e2e8f0;
-    }
-    .meta span { display: inline-block; margin-right: 12px; }
 
-    .card {
-      margin-top: 14px;
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
-      padding: 14px 14px;
-      background: #ffffff;
+    @page { margin: 10mm; size: A4; }
+    
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; }
+    
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      color: var(--slate-800);
+      font-size: 12px;
+      line-height: 1.6;
+      background-color: #f1f5f9;
+      margin: 0;
+      padding: 20px;
+      position: relative;
+      overflow-x: hidden;
     }
-    .title {
-      font-size: 14px;
+
+    /* Abstract UI Decorations */
+    body::before {
+      content: "";
+      position: absolute;
+      top: -100px;
+      right: -100px;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(79, 70, 229, 0.08) 0%, rgba(255, 255, 255, 0) 70%);
+      z-index: -1;
+    }
+
+    .page-container {
+      max-width: 850px;
+      margin: 0 auto;
+      background: var(--white);
+      border-radius: 24px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+      border: 1px solid rgba(255,255,255,0.7);
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Top Navigation Style Bar */
+    .topbar {
+      padding: 30px 40px;
+      background: var(--slate-900);
+      color: var(--white);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .topbar::after {
+      content: "";
+      position: absolute;
+      bottom: -50px;
+      right: -50px;
+      width: 150px;
+      height: 150px;
+      background: var(--primary);
+      filter: blur(80px);
+      opacity: 0.4;
+    }
+
+    .brand-group h1 {
+      margin: 0;
+      font-size: 22px;
       font-weight: 800;
-      margin-bottom: 6px;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
-    .subtitle {
+
+    .brand-group h1 span {
+      color: var(--primary-light);
+      font-weight: 400;
+    }
+
+    .brand-tagline {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--slate-400);
+      font-weight: 600;
+      margin-top: 4px;
+    }
+
+    .meta-info {
+      text-align: right;
       font-size: 10px;
-      color: #475569;
+      color: var(--slate-400);
+    }
+
+    /* Header Content */
+    .header-content {
+      padding: 40px 40px 20px 40px;
+    }
+
+    .main-title {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--slate-900);
+      letter-spacing: -0.5px;
       margin-bottom: 12px;
     }
-    .grid { display: table; width: 100%; }
-    .col { display: table-cell; vertical-align: top; }
-    .col.left { width: 62%; padding-right: 10px; }
-    .col.right { width: 38%; padding-left: 10px; }
 
-    .step {
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
-      padding: 10px 12px;
-      margin-bottom: 10px;
-      background: #f8fafc;
+    .main-subtitle {
+      font-size: 13px;
+      color: var(--slate-600);
+      max-width: 600px;
     }
-    .step-head {
-      display: table;
-      width: 100%;
-      margin-bottom: 6px;
+
+    /* Main Grid Layout */
+    .content-grid {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 40px;
+      padding: 20px 40px 40px 40px;
     }
-    .badge {
-      display: table-cell;
-      width: 40px;
-      height: 40px;
+
+    /* Steps Timeline */
+    .timeline {
+      position: relative;
+    }
+
+    .step-card {
+      position: relative;
+      padding-left: 50px;
+      margin-bottom: 30px;
+    }
+
+    /* The Vertical Line */
+    .step-card::before {
+      content: "";
+      position: absolute;
+      left: 17px;
+      top: 40px;
+      bottom: -40px;
+      width: 2px;
+      background: var(--slate-50);
+      z-index: 1;
+    }
+
+    .step-card:last-child::before { display: none; }
+
+    .step-number {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 36px;
+      height: 36px;
+      background: var(--primary);
+      color: white;
       border-radius: 10px;
-      text-align: center;
-      vertical-align: middle;
-      font-weight: 900;
-      color: #fff;
-      background: #4f46e5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      z-index: 2;
+      box-shadow: 0 4px 10px rgba(79, 70, 229, 0.2);
     }
+
+    .step-content {
+      background: var(--slate-50);
+      padding: 18px;
+      border-radius: 16px;
+      border: 1px solid #edf2f7;
+      transition: transform 0.2s ease;
+    }
+
     .step-title {
-      display: table-cell;
-      vertical-align: middle;
-      padding-left: 10px;
-      font-weight: 900;
-      font-size: 12px;
-      color: #111827;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--slate-900);
+      margin-bottom: 4px;
     }
+
     .step-desc {
-      font-size: 10px;
-      color: #334155;
-    }
-    .hint {
-      margin-top: 6px;
-      font-size: 9px;
-      color: #64748b;
-    }
-    .kpi {
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
-      padding: 12px;
-      background: #0b1220;
-      color: #fff;
-      margin-bottom: 10px;
-    }
-    .kpi h3 {
-      margin: 0 0 6px 0;
       font-size: 11px;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      color: #c7d2fe;
+      color: var(--slate-600);
+      line-height: 1.5;
     }
-    .kpi p { margin: 0; font-size: 10px; color: #e2e8f0; }
-    .contact {
-      border: 1px dashed #c7d2fe;
-      border-radius: 12px;
-      padding: 12px;
-      background: #eef2ff;
-    }
-    .contact strong { color: #1e293b; }
-    .footer {
-      margin-top: 14px;
-      font-size: 9px;
-      color: #64748b;
-      text-align: center;
-      border-top: 1px solid #e2e8f0;
+
+    .step-tip {
+      margin-top: 10px;
       padding-top: 10px;
+      border-top: 1px dashed #cbd5e1;
+      font-size: 10px;
+      font-style: italic;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      gap: 5px;
     }
+
+    /* Sidebar Widgets */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .widget {
+      padding: 24px;
+      border-radius: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .widget-dark {
+      background: var(--slate-900);
+      color: var(--white);
+    }
+
+    .widget-light {
+      background: #f0f4ff;
+      border: 1px solid var(--primary-light);
+    }
+
+    .widget h3 {
+      margin: 0 0 10px 0;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--primary-light);
+    }
+
+    .widget p {
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.6;
+      opacity: 0.9;
+    }
+
+    .contact-card {
+      background: var(--white);
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      padding: 20px;
+    }
+
+    .contact-item {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 11px;
+    }
+
+    .contact-item span:first-child { color: var(--slate-400); }
+    .contact-item span:last-child { font-weight: 600; color: var(--slate-800); }
+
+    .footer {
+      padding: 20px;
+      text-align: center;
+      border-top: 1px solid var(--slate-50);
+      font-size: 10px;
+      color: var(--slate-400);
+      letter-spacing: 0.5px;
+    }
+
+    /* Accent Colors for Steps */
+    .bg-cyan { background: var(--accent-cyan); box-shadow: 0 4px 10px rgba(6, 182, 212, 0.2); }
+    .bg-green { background: var(--accent-green); box-shadow: 0 4px 10px rgba(16, 185, 129, 0.2); }
+    .bg-purple { background: var(--accent-purple); box-shadow: 0 4px 10px rgba(139, 92, 246, 0.2); }
+    .bg-orange { background: #f59e0b; box-shadow: 0 4px 10px rgba(245, 158, 11, 0.2); }
+    .bg-red { background: #ef4444; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.2); }
+    .bg-dark { background: var(--slate-900); box-shadow: 0 4px 10px rgba(15, 23, 42, 0.2); }
+
   </style>
 </head>
 <body>
+
+<div class="page-container">
   <div class="topbar">
-    <div class="brand">
-      TermResult
-      <small>School Onboarding Flow</small>
+    <div class="brand-group">
+      <h1>Term<span>Result</span></h1>
+      <div class="brand-tagline">Onboarding Blueprint</div>
     </div>
-    <div class="meta">
-      <span>Document: TR-ONBOARD-001</span>
-      <span>Generated: {{ ($generatedAt ?? now())->format('d M Y, h:ia') }}</span>
+    <div class="meta-info">
+      <div>REF: TR-ONBOARD-2024</div>
+      <div>DATED: {{ ($generatedAt ?? now())->format('d M Y') }}</div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="title">How schools get started (practical, step-by-step)</div>
-    <div class="subtitle">
-      Share this with a school admin after approval. It shows the correct order to set up TermResult so results, fees, and dashboards work smoothly.
-    </div>
+  <div class="header-content">
+    <div class="main-title">Launch your school portal</div>
+    <div class="main-subtitle">Follow this sequence to ensure your academic data, financial records, and student report cards are generated accurately and securely.</div>
+  </div>
 
-    <div class="grid">
-      <div class="col left">
-        <div class="step">
-          <div class="step-head">
-            <div class="badge">1</div>
-            <div class="step-title">Academic Setup (Sessions & Terms)</div>
-          </div>
-          <div class="step-desc">
-            Create the academic session, set current session, and configure terms (First, Second, Third).
-          </div>
-          <div class="hint">Tip: Always ensure the current session + current term are set correctly.</div>
-        </div>
-
-        <div class="step">
-          <div class="step-head">
-            <div class="badge" style="background:#06b6d4;">2</div>
-            <div class="step-title">School Configuration</div>
-          </div>
-          <div class="step-desc">
-            Upload logo, set school colors/branding, enable/disable features, and configure result position display rules.
-          </div>
-        </div>
-
-        <div class="step">
-          <div class="step-head">
-            <div class="badge" style="background:#22c55e;">3</div>
-            <div class="step-title">Grading Configuration (Per Class)</div>
-          </div>
-          <div class="step-desc">
-            Create grading systems (A–F ranges) and assign them to the correct classes. This controls grade/remark calculations.
-          </div>
-        </div>
-
-        <div class="step">
-          <div class="step-head">
-            <div class="badge" style="background:#f59e0b;">4</div>
-            <div class="step-title">Add Classes & Subjects</div>
-          </div>
-          <div class="step-desc">
-            Create classes (e.g., JSS1–SS3) and add all school subjects. Assign subjects to classes.
-          </div>
-        </div>
-
-        <div class="step">
-          <div class="step-head">
-            <div class="badge" style="background:#a855f7;">5</div>
-            <div class="step-title">Add Teachers</div>
-          </div>
-          <div class="step-desc">
-            Create teacher accounts, assign teaching classes/subjects, and (optionally) set form teachers for classes.
-          </div>
-        </div>
-
-        <div class="step">
-          <div class="step-head">
-            <div class="badge" style="background:#ef4444;">6</div>
-            <div class="step-title">Add Students (Teacher workflow)</div>
-          </div>
-          <div class="step-desc">
-            Teachers (especially form teachers) can add/import students for their form class, then select subjects each student offers.
-          </div>
-        </div>
-
-        <div class="step" style="margin-bottom:0;">
-          <div class="step-head">
-            <div class="badge" style="background:#0b1220;">7</div>
-            <div class="step-title">Start Managing Results & School Activities</div>
-          </div>
-          <div class="step-desc">
-            Teachers enter scores and manage exams/assignments (if enabled). Admins review results, run promotions (3rd term only),
-            manage fees/payments, announcements, complaints, and view reports.
-          </div>
+  <div class="content-grid">
+    <div class="timeline">
+      
+      <div class="step-card">
+        <div class="step-number">1</div>
+        <div class="step-content">
+          <div class="step-title">Academic Setup</div>
+          <div class="step-desc">Initialize your sessions and terms. Define the active timeline for the current school year.</div>
+          <div class="step-tip">💡 Pro-tip: Set your "Current Term" to automate dashboard stats.</div>
         </div>
       </div>
 
-      <div class="col right">
-        <div class="kpi">
-          <h3>Outcome</h3>
-          <p>
-            When setup is done in this order, the school can safely record scores, generate report cards, and give students access to verified PDFs.
-          </p>
+      <div class="step-card">
+        <div class="step-number bg-cyan">2</div>
+        <div class="step-content">
+          <div class="step-title">Identity & Branding</div>
+          <div class="step-desc">Upload high-res logos and set school themes. This applies to all generated PDF report cards.</div>
         </div>
+      </div>
 
-        <div class="kpi">
-          <h3>Best Practice</h3>
-          <p>
-            Only enable Print/Download for report cards when all subject scores have been recorded for a student.
-          </p>
+      <div class="step-card">
+        <div class="step-number bg-green">3</div>
+        <div class="step-content">
+          <div class="step-title">Grading Framework</div>
+          <div class="step-desc">Configure A-F ranges and remarks. You can assign different systems to Nursery, Primary, or Secondary sections.</div>
         </div>
+      </div>
 
-        <div class="contact">
-          <div style="font-weight:900; font-size:11px; margin-bottom:6px;">Need help onboarding?</div>
-          <div style="font-size:10px;">
-            Email: <strong>support@termresult.com</strong><br/>
-            WhatsApp: <strong>09044426264</strong><br/>
-            Web: <strong>termresult.com</strong>
-          </div>
+      <div class="step-card">
+        <div class="step-number bg-orange">4</div>
+        <div class="step-content">
+          <div class="step-title">Structure Classes</div>
+          <div class="step-desc">Add your arms (e.g., JSS 1A, JSS 1B) and subjects. Link subjects to specific classes to simplify teacher entry.</div>
+        </div>
+      </div>
+
+      <div class="step-card">
+        <div class="step-number bg-purple">5</div>
+        <div class="step-content">
+          <div class="step-title">Staff Onboarding</div>
+          <div class="step-desc">Create teacher portals and assign them to their respective subjects and form classes.</div>
+        </div>
+      </div>
+
+      <div class="step-card">
+        <div class="step-number bg-red">6</div>
+        <div class="step-content">
+          <div class="step-title">Student Enrollment</div>
+          <div class="step-desc">Import student data via Excel or manual entry. Form teachers can then assign subjects to individual students.</div>
+        </div>
+      </div>
+
+      <div class="step-card">
+        <div class="step-number bg-dark">7</div>
+        <div class="step-content">
+          <div class="step-title">Go Live & Management</div>
+          <div class="step-desc">Begin recording scores, managing fee payments, and tracking school performance from your admin dashboard.</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="sidebar">
+      <div class="widget widget-dark">
+        <h3>Expected Outcome</h3>
+        <p>A fully synchronized system where financial records match student enrollment, and report cards are generated with zero manual calculation errors.</p>
+      </div>
+
+      <div class="widget widget-light">
+        <h3 style="color: var(--primary);">Best Practice</h3>
+        <p style="color: var(--slate-800);">Always verify subject totals (e.g., 100%) before teachers begin entering CA scores to prevent recalculation issues later.</p>
+      </div>
+
+      <div class="contact-card">
+        <h3 style="margin-top:0; font-size:12px; color:var(--slate-900);">Support Channels</h3>
+        <div class="contact-item">
+          <span>WhatsApp</span>
+          <span>09044426264</span>
+        </div>
+        <div class="contact-item">
+          <span>Email</span>
+          <span>support@termresult.com</span>
+        </div>
+        <div class="contact-item">
+          <span>Web</span>
+          <span>www.termresult.com</span>
         </div>
       </div>
     </div>
-
-    <div class="footer">
-      TermResult • Modern School Management System • Secure • Verified • Nigeria-focused
-    </div>
   </div>
+
+  <div class="footer">
+    TermResult • The Modern Standard for School Management • Built for Excellence
+  </div>
+</div>
+
 </body>
 </html>
-
-

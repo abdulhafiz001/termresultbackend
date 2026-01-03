@@ -7,6 +7,7 @@ use App\Support\TenantContext;
 use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class FeeRulesController extends Controller
 {
@@ -32,9 +33,9 @@ class FeeRulesController extends Controller
         $tenantId = TenantContext::id();
 
         $data = $request->validate([
-            'class_id' => ['nullable', 'integer', 'exists:classes,id'],
+            'class_id' => ['nullable', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'class_ids' => ['nullable', 'array', 'min:1'],
-            'class_ids.*' => ['integer', 'exists:classes,id'],
+            'class_ids.*' => ['integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'amount_naira' => ['required', 'numeric', 'min:0'],
             'label' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:2000'],
@@ -101,14 +102,20 @@ class FeeRulesController extends Controller
         if (array_key_exists('label', $data)) $update['label'] = $data['label'];
         if (array_key_exists('description', $data)) $update['description'] = $data['description'];
 
-        TenantDB::table('fee_rules')->where('id', $id)->update($update);
+        $updated = TenantDB::table('fee_rules')->where('id', $id)->update($update);
+        if (! $updated) {
+            return response()->json(['message' => 'Fee rule not found.'], 404);
+        }
 
         return response()->json(['message' => 'Fee rule updated.']);
     }
 
     public function destroy(int $id)
     {
-        TenantDB::table('fee_rules')->where('id', $id)->delete();
+        $deleted = TenantDB::table('fee_rules')->where('id', $id)->delete();
+        if (! $deleted) {
+            return response()->json(['message' => 'Fee rule not found.'], 404);
+        }
         return response()->json(['message' => 'Fee rule deleted.']);
     }
 }

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Tenant\Student;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Tenant\Admin\GradingConfigsController;
+use App\Support\TenantDB;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,20 +16,20 @@ class ReportCardController extends Controller
     public function download(Request $request)
     {
         $data = $request->validate([
-            'academic_session_id' => ['required', 'integer', 'exists:academic_sessions,id'],
-            'term_id' => ['required', 'integer', 'exists:terms,id'],
+            'academic_session_id' => ['required', 'integer'],
+            'term_id' => ['required', 'integer'],
         ]);
 
         $studentId = (int) $request->user()->id;
         $sessionId = (int) $data['academic_session_id'];
         $termId = (int) $data['term_id'];
 
-        $profile = DB::table('student_profiles')->where('user_id', $studentId)->first();
+        $profile = TenantDB::table('student_profiles')->where('user_id', $studentId)->first();
         $classId = (int) ($profile->current_class_id ?? 0);
-        $className = $classId ? (string) (DB::table('classes')->where('id', $classId)->value('name') ?? '') : '';
+        $className = $classId ? (string) (TenantDB::table('classes')->where('id', $classId)->value('name') ?? '') : '';
 
-        $academicSession = DB::table('academic_sessions')->where('id', $sessionId)->first();
-        $termRow = DB::table('terms')->where('id', $termId)->first();
+        $academicSession = TenantDB::table('academic_sessions')->where('id', $sessionId)->first();
+        $termRow = TenantDB::table('terms')->where('id', $termId)->where('academic_session_id', $sessionId)->first();
 
         if (! $academicSession || ! $termRow) {
             return response()->json(['message' => 'Academic session/term not found.'], 404);
@@ -59,8 +60,11 @@ class ReportCardController extends Controller
             elseif ($classId && in_array($classId, $top3Ids, true)) $policy = 'top3';
         }
 
-        $scores = DB::table('student_scores as sc')
-            ->join('subjects as sub', 'sub.id', '=', 'sc.subject_id')
+        $scores = TenantDB::table('student_scores as sc')
+            ->join('subjects as sub', function ($j) {
+                $j->on('sub.id', '=', 'sc.subject_id')
+                    ->on('sub.tenant_id', '=', 'sc.tenant_id');
+            })
             ->where('sc.student_id', $studentId)
             ->where('sc.academic_session_id', $sessionId)
             ->where('sc.term_id', $termId)
@@ -80,7 +84,7 @@ class ReportCardController extends Controller
         // Prefer student_subject (student-specific), fallback to class_subject.
         $expectedSubjectIds = [];
         if (Schema::hasTable('student_subject')) {
-            $expectedSubjectIds = DB::table('student_subject')
+            $expectedSubjectIds = TenantDB::table('student_subject')
                 ->where('student_id', $studentId)
                 ->pluck('subject_id')
                 ->map(fn ($x) => (int) $x)
@@ -88,7 +92,7 @@ class ReportCardController extends Controller
                 ->all();
         }
         if (empty($expectedSubjectIds) && $classId && Schema::hasTable('class_subject')) {
-            $expectedSubjectIds = DB::table('class_subject')
+            $expectedSubjectIds = TenantDB::table('class_subject')
                 ->where('class_id', $classId)
                 ->pluck('subject_id')
                 ->map(fn ($x) => (int) $x)
@@ -103,7 +107,7 @@ class ReportCardController extends Controller
             ], 422);
         }
 
-        $recordedSubjectIds = DB::table('student_scores')
+        $recordedSubjectIds = TenantDB::table('student_scores')
             ->where('student_id', $studentId)
             ->where('academic_session_id', $sessionId)
             ->where('term_id', $termId)
@@ -120,7 +124,7 @@ class ReportCardController extends Controller
             $missingIds = array_values(array_diff($expectedSubjectIds, $recordedSubjectIds));
             $missingSubjects = [];
             if (!empty($missingIds)) {
-                $missingSubjects = DB::table('subjects')
+                $missingSubjects = TenantDB::table('subjects')
                     ->whereIn('id', $missingIds)
                     ->orderBy('name')
                     ->pluck('name')
@@ -142,8 +146,11 @@ class ReportCardController extends Controller
         $gradingConfig = null;
         $gradingRanges = collect();
         if ($classId) {
-            $gradingConfig = DB::table('grading_configs as gc')
-                ->join('grading_config_classes as gcc', 'gcc.grading_config_id', '=', 'gc.id')
+            $gradingConfig = TenantDB::table('grading_configs as gc')
+                ->join('grading_config_classes as gcc', function ($j) {
+                    $j->on('gcc.grading_config_id', '=', 'gc.id')
+                        ->on('gcc.tenant_id', '=', 'gc.tenant_id');
+                })
                 ->where('gc.is_active', true)
                 ->where('gcc.class_id', $classId)
                 ->orderByDesc('gc.id')
@@ -151,7 +158,7 @@ class ReportCardController extends Controller
                 ->first();
 
             if ($gradingConfig) {
-                $gradingRanges = DB::table('grading_config_ranges')
+                $gradingRanges = TenantDB::table('grading_config_ranges')
                     ->where('grading_config_id', $gradingConfig->id)
                     ->orderByDesc('min_score')
                     ->get(['grade', 'min_score', 'max_score']);
@@ -166,8 +173,11 @@ class ReportCardController extends Controller
         $overallPositionFormatted = null;
         $totalStudentsInClass = null;
         if ($policy !== 'none' && $classId) {
-            $ranked = DB::table('student_scores as sc')
-                ->join('student_profiles as sp', 'sp.user_id', '=', 'sc.student_id')
+            $ranked = TenantDB::table('student_scores as sc')
+                ->join('student_profiles as sp', function ($j) {
+                    $j->on('sp.user_id', '=', 'sc.student_id')
+                        ->on('sp.tenant_id', '=', 'sc.tenant_id');
+                })
                 ->where('sp.current_class_id', $classId)
                 ->where('sc.academic_session_id', $sessionId)
                 ->where('sc.term_id', $termId)
@@ -203,8 +213,11 @@ class ReportCardController extends Controller
         $scores = $scores->map(function ($s) use ($studentId, $classId, $sessionId, $termId, $hidePos) {
             $pos = null;
             if ($classId) {
-                $ranked = DB::table('student_scores as sc')
-                    ->join('student_profiles as sp', 'sp.user_id', '=', 'sc.student_id')
+                $ranked = TenantDB::table('student_scores as sc')
+                    ->join('student_profiles as sp', function ($j) {
+                        $j->on('sp.user_id', '=', 'sc.student_id')
+                            ->on('sp.tenant_id', '=', 'sc.tenant_id');
+                    })
                     ->where('sp.current_class_id', $classId)
                     ->where('sc.academic_session_id', $sessionId)
                     ->where('sc.term_id', $termId)
@@ -242,7 +255,7 @@ class ReportCardController extends Controller
         $promotionStatus = null;
         $isThirdTerm = strtolower(trim((string) $termRow->name)) === 'third term';
         if ($isThirdTerm) {
-            $promotion = DB::table('student_promotions')
+            $promotion = TenantDB::table('student_promotions')
                 ->where('student_id', $studentId)
                 ->where('academic_session_id', $sessionId)
                 ->where('term_id', $termId)
@@ -253,12 +266,12 @@ class ReportCardController extends Controller
         // Final average (for 3rd term) = (T1 + T2 + T3)/3
         $thirdTermFinalAverage = null;
         if ($isThirdTerm) {
-            $firstId = DB::table('terms')->where('academic_session_id', $sessionId)->whereRaw('LOWER(TRIM(name)) = ?', ['first term'])->value('id');
-            $secondId = DB::table('terms')->where('academic_session_id', $sessionId)->whereRaw('LOWER(TRIM(name)) = ?', ['second term'])->value('id');
+            $firstId = TenantDB::table('terms')->where('academic_session_id', $sessionId)->whereRaw('LOWER(TRIM(name)) = ?', ['first term'])->value('id');
+            $secondId = TenantDB::table('terms')->where('academic_session_id', $sessionId)->whereRaw('LOWER(TRIM(name)) = ?', ['second term'])->value('id');
 
             $termAvg = function (?int $tid) use ($studentId, $sessionId): ?float {
                 if (! $tid) return null;
-                $rows = DB::table('student_scores')
+                $rows = TenantDB::table('student_scores')
                     ->where('student_id', $studentId)
                     ->where('academic_session_id', $sessionId)
                     ->where('term_id', $tid)

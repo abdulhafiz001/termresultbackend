@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Tenant\Admin\GradingConfigsController;
+use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -20,9 +21,9 @@ class ResultsController extends Controller
         $sessionId = (int) $request->query('academic_session_id');
         $termId = (int) $request->query('term_id');
 
-        $currentSession = DB::table('academic_sessions')->where('is_current', true)->first();
+        $currentSession = TenantDB::table('academic_sessions')->where('is_current', true)->first();
         $currentTerm = $currentSession
-            ? DB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
+            ? TenantDB::table('terms')->where('academic_session_id', $currentSession->id)->where('is_current', true)->first()
             : null;
 
         $sessionId = $sessionId ?: ($currentSession->id ?? 0);
@@ -33,9 +34,15 @@ class ResultsController extends Controller
         }
 
         // Get student info
-        $student = DB::table('users')
-            ->leftJoin('student_profiles', 'users.id', '=', 'student_profiles.user_id')
-            ->leftJoin('classes', 'student_profiles.current_class_id', '=', 'classes.id')
+        $student = TenantDB::table('users')
+            ->leftJoin('student_profiles', function ($j) {
+                $j->on('users.id', '=', 'student_profiles.user_id')
+                    ->on('users.tenant_id', '=', 'student_profiles.tenant_id');
+            })
+            ->leftJoin('classes', function ($j) {
+                $j->on('student_profiles.current_class_id', '=', 'classes.id')
+                    ->on('student_profiles.tenant_id', '=', 'classes.tenant_id');
+            })
             ->where('users.id', $studentId)
             ->where('users.role', 'student')
             ->select([
@@ -56,8 +63,11 @@ class ResultsController extends Controller
         }
 
         // Get results
-        $rows = DB::table('student_scores')
-            ->join('subjects', 'subjects.id', '=', 'student_scores.subject_id')
+        $rows = TenantDB::table('student_scores')
+            ->join('subjects', function ($j) {
+                $j->on('subjects.id', '=', 'student_scores.subject_id')
+                    ->on('subjects.tenant_id', '=', 'student_scores.tenant_id');
+            })
             ->where('student_scores.student_id', $studentId)
             ->where('student_scores.academic_session_id', $sessionId)
             ->where('student_scores.term_id', $termId)
@@ -96,11 +106,14 @@ class ResultsController extends Controller
         $totalScore = $rows->sum('total');
         $averageScore = $rows->count() > 0 ? round($totalScore / $rows->count(), 1) : 0;
 
-        $term = DB::table('terms')->where('id', $termId)->first();
+        $term = TenantDB::table('terms')->where('id', $termId)->first();
         $promotion = null;
         if ($term && strtolower(trim((string) $term->name)) === 'third term') {
-            $promotion = DB::table('student_promotions as sp')
-                ->leftJoin('classes as c', 'c.id', '=', 'sp.to_class_id')
+            $promotion = TenantDB::table('student_promotions as sp')
+                ->leftJoin('classes as c', function ($j) {
+                    $j->on('c.id', '=', 'sp.to_class_id')
+                        ->on('c.tenant_id', '=', 'sp.tenant_id');
+                })
                 ->where('sp.student_id', $studentId)
                 ->where('sp.academic_session_id', $sessionId)
                 ->where('sp.term_id', $termId)

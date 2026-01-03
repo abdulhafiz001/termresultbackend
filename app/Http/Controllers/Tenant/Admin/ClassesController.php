@@ -3,12 +3,14 @@
 namespace App\Http\Controllers\Tenant\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Imports\ClassesImport;
 use App\Models\SchoolClass;
 use App\Support\TenantCache;
 use App\Support\TenantContext;
 use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Validation\Rule;
 
 class ClassesController extends Controller
@@ -17,9 +19,11 @@ class ClassesController extends Controller
     {
         $school = app('tenant.school');
         $cacheKey = TenantCache::adminClassesKey((int) $school->id);
+        $tenantId = TenantContext::id();
 
-        $classes = Cache::remember($cacheKey, now()->addMinutes(10), function () {
+        $classes = Cache::remember($cacheKey, now()->addMinutes(10), function () use ($tenantId) {
             return SchoolClass::query()
+                ->where('tenant_id', $tenantId)
                 ->orderBy('name')
                 ->get()
                 ->map(function ($c) {
@@ -55,7 +59,8 @@ class ClassesController extends Controller
             'description' => ['nullable', 'string', 'max:2000'],
         ]);
 
-        $class = SchoolClass::create($data);
+        // Ensure tenant_id is always set.
+        $class = SchoolClass::create(TenantContext::withTenant($data));
         TenantCache::forgetAdminLists(app('tenant.school'));
 
         return response()->json(['data' => $class], 201);
@@ -63,8 +68,8 @@ class ClassesController extends Controller
 
     public function update(Request $request, int $id)
     {
-        $class = SchoolClass::findOrFail($id);
         $tenantId = TenantContext::id();
+        $class = SchoolClass::query()->where('tenant_id', $tenantId)->findOrFail($id);
 
         $data = $request->validate([
             'name' => [
@@ -88,11 +93,88 @@ class ClassesController extends Controller
 
     public function destroy(int $id)
     {
-        $class = SchoolClass::findOrFail($id);
+        $tenantId = TenantContext::id();
+        $class = SchoolClass::query()->where('tenant_id', $tenantId)->findOrFail($id);
         $class->delete();
         TenantCache::forgetAdminLists(app('tenant.school'));
 
         return response()->json(['message' => 'Class deleted.']);
+    }
+
+    public function import(Request $request)
+    {
+        $tenantId = TenantContext::id();
+
+        $data = $request->validate([
+            'file' => ['required', 'file', 'max:5120'], // 5MB
+        ]);
+
+        $file = $request->file('file');
+        $sheets = Excel::toArray(new ClassesImport(), $file);
+        $rows = $sheets[0] ?? [];
+
+        $created = 0;
+        $skipped = 0;
+        $errors = [];
+
+        foreach ($rows as $i => $row) {
+            $name = trim((string) ($row['name'] ?? ''));
+            $description = trim((string) ($row['description'] ?? '')) ?: null;
+            $formTeacherUsername = trim((string) ($row['form_teacher_username'] ?? '')) ?: null;
+
+            $rowNum = $i + 2;
+
+            if ($name === '') {
+                $skipped++;
+                $errors[] = "Row {$rowNum}: name is required.";
+                continue;
+            }
+
+            // Skip duplicates within this tenant.
+            $exists = SchoolClass::query()
+                ->where('tenant_id', $tenantId)
+                ->where('name', $name)
+                ->exists();
+
+            if ($exists) {
+                $skipped++;
+                continue;
+            }
+
+            $formTeacherId = null;
+            if ($formTeacherUsername) {
+                $formTeacherId = TenantDB::table('users')
+                    ->where('role', 'teacher')
+                    ->where('username', $formTeacherUsername)
+                    ->value('id');
+
+                if (! $formTeacherId) {
+                    $skipped++;
+                    $errors[] = "Row {$rowNum}: teacher username '{$formTeacherUsername}' not found.";
+                    continue;
+                }
+            }
+
+            SchoolClass::create([
+                'tenant_id' => $tenantId,
+                'name' => $name,
+                'description' => $description,
+                'form_teacher_id' => $formTeacherId,
+            ]);
+
+            $created++;
+        }
+
+        TenantCache::forgetAdminLists(app('tenant.school'));
+
+        return response()->json([
+            'message' => "Import completed. Imported: {$created}, Skipped: {$skipped}.",
+            'data' => [
+                'imported' => $created,
+                'skipped' => $skipped,
+                'errors' => array_slice($errors, 0, 50),
+            ],
+        ]);
     }
 }
 

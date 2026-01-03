@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class PaymentsController extends Controller
 {
@@ -49,9 +50,9 @@ class PaymentsController extends Controller
         $tenantId = TenantContext::id();
 
         $data = $request->validate([
-            'academic_session_id' => ['nullable', 'integer', 'exists:academic_sessions,id'],
-            'term_id' => ['nullable', 'integer', 'exists:terms,id'],
-            'class_id' => ['nullable', 'integer', 'exists:classes,id'],
+            'academic_session_id' => ['nullable', 'integer', Rule::exists('academic_sessions', 'id')->where('tenant_id', $tenantId)],
+            'term_id' => ['nullable', 'integer', Rule::exists('terms', 'id')->where('tenant_id', $tenantId)],
+            'class_id' => ['nullable', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
             'q' => ['nullable', 'string', 'max:255'],
         ]);
 
@@ -127,9 +128,9 @@ class PaymentsController extends Controller
         $tenantId = TenantContext::id();
 
         $data = $request->validate([
-            'academic_session_id' => ['nullable', 'integer', 'exists:academic_sessions,id'],
-            'term_id' => ['nullable', 'integer', 'exists:terms,id'],
-            'class_id' => ['nullable', 'integer', 'exists:classes,id'],
+            'academic_session_id' => ['nullable', 'integer', Rule::exists('academic_sessions', 'id')->where('tenant_id', $tenantId)],
+            'term_id' => ['nullable', 'integer', Rule::exists('terms', 'id')->where('tenant_id', $tenantId)],
+            'class_id' => ['nullable', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
         ]);
 
         $query = TenantDB::table('payments')->where('status', 'success');
@@ -169,11 +170,11 @@ class PaymentsController extends Controller
         $tenantId = TenantContext::id();
 
         $data = $request->validate([
-            'class_id' => ['required', 'integer', 'exists:classes,id'],
-            'student_id' => ['required', 'integer', 'exists:users,id'],
-            'fee_rule_id' => ['nullable', 'integer', 'exists:fee_rules,id'],
-            'academic_session_id' => ['nullable', 'integer', 'exists:academic_sessions,id'],
-            'term_id' => ['nullable', 'integer', 'exists:terms,id'],
+            'class_id' => ['required', 'integer', Rule::exists('classes', 'id')->where('tenant_id', $tenantId)],
+            'student_id' => ['required', 'integer', Rule::exists('users', 'id')->where('tenant_id', $tenantId)],
+            'fee_rule_id' => ['nullable', 'integer', Rule::exists('fee_rules', 'id')->where('tenant_id', $tenantId)],
+            'academic_session_id' => ['nullable', 'integer', Rule::exists('academic_sessions', 'id')->where('tenant_id', $tenantId)],
+            'term_id' => ['nullable', 'integer', Rule::exists('terms', 'id')->where('tenant_id', $tenantId)],
             'amount_naira' => ['required', 'numeric', 'min:1'],
             'reference' => ['required', 'string', 'max:100'],
         ]);
