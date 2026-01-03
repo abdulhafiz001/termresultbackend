@@ -17,6 +17,12 @@ use Carbon\Carbon;
 
 class ExamsController extends Controller
 {
+    private function generateResumeKey(): string
+    {
+        // 6-char uppercase alphanumeric resume key (easy to read/type)
+        return strtoupper(Str::random(6));
+    }
+
     public function answerSlips(Request $request)
     {
         $tenantId = TenantContext::id();
@@ -163,7 +169,7 @@ class ExamsController extends Controller
         $student = $request->user();
         $data = $request->validate([
             'code' => ['required', 'string', 'size:6'],
-            'continue_key' => ['nullable', 'string', 'min:6', 'max:64'],
+            'continue_key' => ['nullable', 'string', 'size:6'],
         ]);
 
         $exam = DB::table('exams as e')
@@ -211,7 +217,7 @@ class ExamsController extends Controller
 
         if (! $attempt) {
             // Create attempt and return continue key once (but don't show it to student - only store internally).
-            $continueKey = strtoupper(Str::random(12));
+            $continueKey = $this->generateResumeKey();
             DB::table('exam_attempts')->insert([
                 'tenant_id' => $tenantId,
                 'exam_id' => $exam->id,
@@ -232,18 +238,16 @@ class ExamsController extends Controller
             ]);
         }
 
-        // Existing attempt: require continue_key if in_progress or not_started, allow if submitted (view only).
-        if ($attempt->status !== 'submitted') {
-            if (empty($data['continue_key'])) {
-                return response()->json([
-                    'message' => 'Continue key is required to resume this exam. Contact your teacher/admin for your continue key.',
-                    'requires_continue_key' => true,
-                ], 422);
-            }
-            if (hash('sha256', $data['continue_key']) !== $attempt->continue_token_hash) {
-                return response()->json(['message' => 'Invalid continue key.'], 403);
-            }
-            // Valid continue key - allow them to continue
+        // Existing attempt: require continue_key for any resume/access attempt (including submitted),
+        // because the key is rotated and managed via exam monitor.
+        if (empty($data['continue_key'])) {
+            return response()->json([
+                'message' => 'Resume key is required. Contact your teacher/admin for your resume key.',
+                'requires_continue_key' => true,
+            ], 422);
+        }
+        if (hash('sha256', $data['continue_key']) !== $attempt->continue_token_hash) {
+            return response()->json(['message' => 'Invalid resume key.'], 403);
         }
 
         return response()->json([
@@ -254,7 +258,7 @@ class ExamsController extends Controller
                 'submitted_at' => $attempt->submitted_at,
                 'objective_score' => $attempt->objective_score,
                 'total_score' => $attempt->total_score,
-                'continue_key_verified' => ! empty($data['continue_key']),
+                'continue_key_verified' => true,
             ],
         ]);
     }
@@ -264,7 +268,7 @@ class ExamsController extends Controller
         $tenantId = TenantContext::id();
         $student = $request->user();
         $data = $request->validate([
-            'continue_key' => ['required', 'string', 'min:6', 'max:64'],
+            'continue_key' => ['required', 'string', 'size:6'],
         ]);
 
         $exam = DB::table('exams as e')
@@ -289,23 +293,40 @@ class ExamsController extends Controller
         if (hash('sha256', $data['continue_key']) !== $attempt->continue_token_hash) {
             return response()->json(['message' => 'Invalid continue key.'], 403);
         }
-        // Allow resume if submitted less than 2 minutes ago (likely auto-submit from page leave)
-        // Otherwise, if fully submitted, don't allow resume
+
+        // Rotate resume key after successful use (one-time key). The returned key must be used for
+        // subsequent heartbeat/save/submit calls; the old key becomes invalid immediately.
+        $rotatedKey = $this->generateResumeKey();
+        DB::table('exam_attempts')->where('tenant_id', $tenantId)->where('id', $attempt->id)->update([
+            'continue_token_hash' => hash('sha256', $rotatedKey),
+            'continue_key_plain' => $rotatedKey,
+            'updated_at' => now(),
+        ]);
+
         if ($attempt->status === 'submitted') {
-            $submittedAt = $attempt->submitted_at ? Carbon::parse($attempt->submitted_at) : null;
+            // Allow resuming/re-attempting while exam is still live and time hasn't elapsed.
             $now = Carbon::now();
-            if ($submittedAt && $submittedAt->diffInMinutes($now) < 2) {
-                // Recently submitted (likely auto-submit) - allow resume
-                DB::table('exam_attempts')->where('tenant_id', $tenantId)->where('id', $attempt->id)->update([
-                    'status' => 'in_progress',
-                    'submitted_at' => null,
-                    'updated_at' => now(),
-                ]);
-                $attempt->status = 'in_progress';
-                $attempt->submitted_at = null;
-            } else {
-                return response()->json(['message' => 'This exam has already been submitted and cannot be resumed.'], 409);
+            if ($attempt->started_at) {
+                $startedAtTmp = $attempt->started_at instanceof Carbon
+                    ? $attempt->started_at
+                    : Carbon::parse((string) $attempt->started_at);
+                $endsAtTmp = (clone $startedAtTmp)->addMinutes((int) $exam->duration_minutes);
+                if ($now->greaterThanOrEqualTo($endsAtTmp)) {
+                    return response()->json(['message' => 'Time has elapsed for this exam.'], 409);
+                }
             }
+
+            DB::table('exam_attempts')->where('tenant_id', $tenantId)->where('id', $attempt->id)->update([
+                'status' => 'in_progress',
+                'submitted_at' => null,
+                'objective_score' => null,
+                'total_score' => null,
+                'marked_by' => null,
+                'marked_at' => null,
+                'updated_at' => now(),
+            ]);
+            $attempt->status = 'in_progress';
+            $attempt->submitted_at = null;
         }
 
         if (! $attempt->started_at) {
@@ -386,6 +407,7 @@ class ExamsController extends Controller
                 'status' => $attempt->status,
                 'started_at' => $attempt->started_at,
                 'ends_at' => $endsAt->toISOString(),
+                'continue_key' => $rotatedKey,
             ],
             'questions' => $questions,
             'answers' => $existingAnswers,
@@ -426,7 +448,7 @@ class ExamsController extends Controller
         $tenantId = TenantContext::id();
         $student = $request->user();
         $data = $request->validate([
-            'continue_key' => ['required', 'string', 'min:6', 'max:64'],
+            'continue_key' => ['required', 'string', 'size:6'],
         ]);
 
         $attempt = TenantDB::table('exam_attempts')->where('exam_id', $examId)->where('student_id', $student->id)->first();
@@ -449,7 +471,7 @@ class ExamsController extends Controller
         $tenantId = TenantContext::id();
         $student = $request->user();
         $data = $request->validate([
-            'continue_key' => ['required', 'string', 'min:6', 'max:64'],
+            'continue_key' => ['required', 'string', 'size:6'],
             'answers' => ['required', 'array', 'min:1'],
             'answers.*.question_number' => ['required', 'integer', 'min:1'],
             'answers.*.objective_choice' => ['nullable', 'string', 'max:2'],
@@ -494,7 +516,7 @@ class ExamsController extends Controller
         $tenantId = TenantContext::id();
         $student = $request->user();
         $data = $request->validate([
-            'continue_key' => ['required', 'string', 'min:6', 'max:64'],
+            'continue_key' => ['required', 'string', 'size:6'],
             'answers' => ['nullable', 'array'],
             'answers.*.question_number' => ['required_with:answers', 'integer', 'min:1'],
             'answers.*.objective_choice' => ['nullable', 'string', 'max:2'],

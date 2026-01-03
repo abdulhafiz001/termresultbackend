@@ -85,11 +85,12 @@ class ExamsController extends Controller
     {
         $row = TenantDB::table('exams')->where('id', $id)->first();
         if (! $row) return response()->json(['message' => 'Exam not found.'], 404);
-        if ($row->status === 'ended') return response()->json(['message' => 'Exam already ended.'], 409);
 
         TenantDB::table('exams')->where('id', $id)->update([
             'status' => 'live',
-            'started_at' => $row->started_at ?: now(),
+            // If restarting an ended exam, reset ended_at and restart clock marker.
+            'ended_at' => null,
+            'started_at' => now(),
             'updated_at' => now(),
         ]);
 
