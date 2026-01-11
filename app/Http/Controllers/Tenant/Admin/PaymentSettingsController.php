@@ -9,6 +9,7 @@ use App\Support\TenantDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class PaymentSettingsController extends Controller
 {
@@ -50,15 +51,25 @@ class PaymentSettingsController extends Controller
 
     public function paystackBanks(PaystackService $paystack)
     {
-        $json = $paystack->listBanks('nigeria');
-        $rows = $json['data'] ?? [];
-        $banks = collect($rows)->map(fn ($b) => [
-            'name' => $b['name'] ?? null,
-            'code' => $b['code'] ?? null,
-            'slug' => $b['slug'] ?? null,
-        ])->filter(fn ($b) => ! empty($b['code']) && ! empty($b['name']))->values()->all();
+        try {
+            $json = $paystack->listBanks('nigeria');
+            $rows = $json['data'] ?? [];
+            $banks = collect($rows)->map(fn ($b) => [
+                'name' => $b['name'] ?? null,
+                'code' => $b['code'] ?? null,
+                'slug' => $b['slug'] ?? null,
+            ])->filter(fn ($b) => ! empty($b['code']) && ! empty($b['name']))->values()->all();
 
-        return response()->json(['data' => $banks]);
+            return response()->json(['data' => $banks]);
+        } catch (\Throwable $e) {
+            Log::error('Paystack banks API error: ' . $e->getMessage(), [
+                'exception' => $e,
+            ]);
+            return response()->json([
+                'message' => 'Failed to load banks. Please try again later.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
     }
 
     public function resolvePaystackAccount(Request $request, PaystackService $paystack)

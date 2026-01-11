@@ -36,8 +36,77 @@ class DashboardController extends Controller
                 ->first();
         }
 
-        // Recent activities are not yet tracked per-tenant (avoid querying central audit_logs from tenant connection).
+        // Get recent activities from various sources
         $recentActivities = collect();
+        
+        // Get recently created students (last 7 days)
+        $recentStudents = TenantDB::table('users as u')
+            ->leftJoin('student_profiles as sp', function ($j) {
+                $j->on('sp.user_id', '=', 'u.id')
+                  ->on('sp.tenant_id', '=', 'u.tenant_id');
+            })
+            ->where('u.role', 'student')
+            ->where('u.created_at', '>=', now()->subDays(7))
+            ->orderByDesc('u.created_at')
+            ->limit(5)
+            ->get([
+                'u.id',
+                'u.created_at',
+                'sp.first_name',
+                'sp.last_name',
+                'u.admission_number',
+            ])
+            ->map(function ($student) {
+                $name = trim(($student->first_name ?? '') . ' ' . ($student->last_name ?? ''));
+                return [
+                    'id' => 'student_' . $student->id,
+                    'action' => 'student_registered',
+                    'description' => 'New student registered: ' . ($name ?: $student->admission_number),
+                    'user' => 'System',
+                    'created_at' => $student->created_at,
+                ];
+            });
+        
+        // Get recently created teachers (last 7 days)
+        $recentTeachers = TenantDB::table('users')
+            ->where('role', 'teacher')
+            ->where('created_at', '>=', now()->subDays(7))
+            ->orderByDesc('created_at')
+            ->limit(5)
+            ->get(['id', 'username', 'created_at'])
+            ->map(function ($teacher) {
+                return [
+                    'id' => 'teacher_' . $teacher->id,
+                    'action' => 'teacher_added',
+                    'description' => 'New teacher added: ' . $teacher->username,
+                    'user' => 'System',
+                    'created_at' => $teacher->created_at,
+                ];
+            });
+        
+        // Get recently created classes (last 7 days)
+        $recentClasses = TenantDB::table('classes')
+            ->where('created_at', '>=', now()->subDays(7))
+            ->orderByDesc('created_at')
+            ->limit(5)
+            ->get(['id', 'name', 'created_at'])
+            ->map(function ($class) {
+                return [
+                    'id' => 'class_' . $class->id,
+                    'action' => 'class_created',
+                    'description' => 'New class created: ' . $class->name,
+                    'user' => 'System',
+                    'created_at' => $class->created_at,
+                ];
+            });
+        
+        // Merge all activities and sort by date
+        $recentActivities = $recentStudents
+            ->concat($recentTeachers)
+            ->concat($recentClasses)
+            ->sortByDesc('created_at')
+            ->take(10)
+            ->values();
 
         return response()->json([
             'data' => [
@@ -64,15 +133,7 @@ class DashboardController extends Controller
                     'start_date' => $currentTerm->start_date,
                     'end_date' => $currentTerm->end_date,
                 ] : null,
-                'recent_activities' => $recentActivities->map(function ($activity) {
-                    return [
-                        'id' => $activity->id,
-                        'action' => $activity->action ?? 'Activity',
-                        'description' => $activity->description ?? '',
-                        'user' => $activity->user_name ?? 'System',
-                        'created_at' => $activity->created_at,
-                    ];
-                }),
+                'recent_activities' => $recentActivities->toArray(),
             ],
         ]);
     }

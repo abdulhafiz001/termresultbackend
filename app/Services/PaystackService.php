@@ -51,16 +51,25 @@ class PaystackService
 
         $res = Http::withToken($secret)
             ->acceptJson()
+            ->timeout(30) // Add timeout to prevent hanging
             ->get('https://api.paystack.co/bank', [
                 'country' => $country,
                 'perPage' => 200,
             ]);
 
         if (! $res->successful()) {
-            throw new \RuntimeException('Paystack list banks failed: '.$res->body());
+            $errorBody = $res->body();
+            $statusCode = $res->status();
+            throw new \RuntimeException("Paystack list banks failed (HTTP {$statusCode}): {$errorBody}");
         }
 
-        return $res->json();
+        $json = $res->json();
+        if (!isset($json['status']) || $json['status'] !== true) {
+            $message = $json['message'] ?? 'Unknown error from Paystack';
+            throw new \RuntimeException("Paystack list banks failed: {$message}");
+        }
+
+        return $json;
     }
 
     public function resolveBankAccount(string $accountNumber, string $bankCode, ?string $secretKey = null): array
