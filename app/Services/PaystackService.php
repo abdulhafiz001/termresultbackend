@@ -10,7 +10,10 @@ class PaystackService
     {
         $secret = $secretKey ?: env('PAYSTACK_SECRET_KEY');
         if (! $secret) {
-            throw new \RuntimeException('PAYSTACK_SECRET_KEY is not configured.');
+            throw new \RuntimeException('PAYSTACK_SECRET_KEY is not configured in environment variables.');
+        }
+        if (strlen($secret) < 10) {
+            throw new \RuntimeException('PAYSTACK_SECRET_KEY appears to be invalid (too short).');
         }
         return $secret;
     }
@@ -64,9 +67,17 @@ class PaystackService
         }
 
         $json = $res->json();
+        
+        // Handle case where response might not be valid JSON
+        if ($json === null) {
+            throw new \RuntimeException('Paystack API returned invalid JSON response. Please check your API key and network connection.');
+        }
+        
+        // Check if Paystack returned an error
         if (!isset($json['status']) || $json['status'] !== true) {
             $message = $json['message'] ?? 'Unknown error from Paystack';
-            throw new \RuntimeException("Paystack list banks failed: {$message}");
+            $data = $json['data'] ?? null;
+            throw new \RuntimeException("Paystack list banks failed: {$message}" . ($data ? " (Data: " . json_encode($data) . ")" : ""));
         }
 
         return $json;

@@ -62,12 +62,27 @@ class PaymentSettingsController extends Controller
 
             return response()->json(['data' => $banks]);
         } catch (\Throwable $e) {
-            Log::error('Paystack banks API error: ' . $e->getMessage(), [
-                'exception' => $e,
+            // Log full error details for debugging
+            Log::error('Paystack banks API error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+                'previous' => $e->getPrevious() ? $e->getPrevious()->getMessage() : null,
             ]);
+            
+            // Return more detailed error in development, generic in production
+            $errorMessage = config('app.debug') 
+                ? 'Failed to load banks: ' . $e->getMessage() 
+                : 'Failed to load banks. Please check your Paystack configuration and try again.';
+            
             return response()->json([
-                'message' => 'Failed to load banks. Please try again later.',
-                'error' => config('app.debug') ? $e->getMessage() : null,
+                'message' => $errorMessage,
+                'error' => config('app.debug') ? [
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ] : null,
             ], 500);
         }
     }
