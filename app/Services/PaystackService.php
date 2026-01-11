@@ -8,9 +8,9 @@ class PaystackService
 {
     private function secret(?string $secretKey = null): string
     {
-        $secret = $secretKey ?: env('PAYSTACK_SECRET_KEY');
+        $secret = $secretKey ?: config('services.paystack.secret');
         if (! $secret) {
-            throw new \RuntimeException('PAYSTACK_SECRET_KEY is not configured in environment variables.');
+            throw new \RuntimeException('PAYSTACK_SECRET_KEY is not configured. Please set it in your .env file and run php artisan config:cache.');
         }
         if (strlen($secret) < 10) {
             throw new \RuntimeException('PAYSTACK_SECRET_KEY appears to be invalid (too short).');
